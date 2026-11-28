@@ -366,6 +366,8 @@ impl Tree {
             .reserve_projection(d.scrolls, self.elements.slots.capacity())?;
         self.output
             .reserve_scrolls(d.scrolls, d.live, words, self.budget)?;
+        self.output
+            .reserve_navigation(tree.tab_stops, d.scrolls, self.budget)?;
         self.output.fits.reserve(d.images, self.budget)?;
         self.output
             .reserve_poses(d.poses * (1 + usize::from(tree.escapes != 0)), self.budget)?;
@@ -435,6 +437,9 @@ impl Tree {
         for s in &b.entries {
             if !s.attached {
                 if let Some(&k) = e.ids.get(&s.id) {
+                    // Its final parent can now contain *no* stops; don't rely
+                    // on the parent's new summary to remove the old ordinal.
+                    self.layers.navigation_changed |= e.slots[k].stats.tab_stops != 0;
                     self.layers.scroll.remove(k);
                     e.detach(k);
                 }

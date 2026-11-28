@@ -40,9 +40,9 @@ defmodule Emerge.Input do
   depend on platform support. Subscribing does not synthesize missing events.
   Window-close requests go to `handle_close/2`, never this callback.
 
-  DRM touchscreens deliver contact-local `:touch` events, not mouse button
-  emulation to raw observers. Contact IDs identify one lifetime; reused hardware
-  slots receive new IDs. Up/cancel carry that contact's last position. A cancel
+  Wayland and DRM touchscreens deliver contact-local `:touch` events, not mouse
+  emulation to raw observers. Contact IDs identify one lifetime; reused seat or
+  hardware slots receive new IDs. Up/cancel carry that contact's last position. A cancel
   never activates a virtual key. Mouse subscriptions remain unchanged.
 
   ## Display wake

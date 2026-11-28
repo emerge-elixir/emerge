@@ -77,6 +77,26 @@ if System.get_env("EMERGE_TEST_STAGES") in ~w(headless raster opengl vulkan) do
         ])
       end
 
+      def render(%{pose: :fling}),
+        do:
+          el(
+            [width(fill()), height(px(64)), scrollbar_y(), Event.on_scroll(:pan)],
+            el([width(fill()), height(px(10_064)), Background.color(:red)], none())
+          )
+
+      def render(%{pose: {:focus, msg, color}}),
+        do:
+          el(
+            [
+              width(fill()),
+              height(fill()),
+              Background.color(color),
+              Event.on_focus({:focus, msg}),
+              Event.on_press({:press, msg})
+            ],
+            none()
+          )
+
       def render(%{pose: {:scroll, pos, route}}) do
         column(
           [width(px(64)), height(px(64)), scrollbar_y(), scroll_y(pos), Event.on_scroll(route)],
@@ -195,6 +215,53 @@ if System.get_env("EMERGE_TEST_STAGES") in ~w(headless raster opengl vulkan) do
       stage(:installed, 2)
       output(r, :red)
       %{v: v, r: r}
+    end
+
+    if @api == :headless do
+      test "a release trajectory waits for installation rather than queuing missed ticks", %{
+        v: v,
+        r: r
+      } do
+        send(v, {:pose, :fling})
+        stage(:installed, 3)
+        gate(r, :opportunity, true)
+
+        contact = fn phase, y ->
+          assert :ok == EmergeSkia.send_input(r, {:touch, {7, phase, {5, y}}})
+        end
+
+        contact.(:down, 45)
+        Process.sleep(16)
+        contact.(:move, -155)
+        assert_receive {:routed, {:pan, %{y: 0.02}}}
+        contact.(:up, -155)
+        assert_receive {:routed, {:pan, %{y: first}}} when first > 0.02, 1_000
+        refute_receive {:routed, {:pan, _}}, 120
+        gate(r, :opportunity, false)
+        assert_receive {:routed, {:pan, %{y: next}}} when next > first, 1_000
+      end
+
+      test "a held focus registry cannot change payload-free key routes until installation", %{
+        v: v,
+        r: r
+      } do
+        send(v, {:pose, {:focus, :old, :red}})
+        stage(:installed, 3)
+        gate(r, :opportunity, true)
+        send(v, {:pose, {:focus, :new, :blue}})
+        stage(:ready, 4)
+        assert :ok = EmergeSkia.send_input(r, {:key, {:tab, :press, []}})
+        assert_receive {:routed, {:focus, :old}}
+        assert :ok = EmergeSkia.send_input(r, {:key, {:enter, :press, []}})
+        assert_receive {:routed, {:press, :old}}
+        output(r, :red)
+        gate(r, :opportunity, false)
+        stage(:installed, 4)
+        output(r, :blue)
+        assert :ok = EmergeSkia.send_input(r, {:key, {:enter, :press, []}})
+        assert_receive {:routed, {:press, :new}}
+        refute_received {:routed, {:focus, :new}}
+      end
     end
 
     test "two computed command sets before a draw claim replay only the newer one", %{v: v, r: r} do

@@ -1,11 +1,17 @@
 //! The display interprets an operation against installed geometry. Absolute
 //! receipts coalesce per attachment; a slow layout/draw never replays a wheel
 //! delta or becomes the source of a callback. No mutable tree crosses stages.
-use super::{dispatch::deliver, *};
+use super::{
+    dispatch::{Context, Position},
+    *,
+};
+mod keyboard;
+mod kinetic;
 use crate::tree::{
     Attachment, Scene, ScrollHit,
     scroll::{Progress, Update},
 };
+pub(super) use kinetic::Velocity;
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -47,6 +53,8 @@ impl Inbox {
         })
     }
 }
+pub(super) const PAN_SLOP: f32 = 8.;
+
 #[derive(Clone, Copy)]
 enum Capture {
     Thumb {
@@ -61,6 +69,7 @@ enum Capture {
         start: [f32; 2],
         last: [f32; 2],
         active: bool,
+        locked: Option<usize>,
     },
 }
 #[derive(Default)]
@@ -70,16 +79,38 @@ pub(super) struct Driver {
     hover: Option<(Attachment, usize)>,
     predicted: HashMap<Attachment, [Progress; 2]>,
     serial: u64,
-}
-struct Dispatch<'a, 'env> {
-    owner: &'a Owner,
-    env: Env<'env>,
-    pid: Option<LocalPid>,
-    epoch: u64,
+    fling: Option<kinetic::Fling>,
 }
 impl Driver {
+    #[cfg(all(target_os = "linux", feature = "wayland"))]
+    pub fn remap(&mut self, map: impl Fn([f32; 2]) -> [f32; 2]) {
+        self.cursor = self.cursor.map(&map);
+        if let Some(Capture::Pan { start, last, .. }) = &mut self.capture {
+            *start = map(*start);
+            *last = map(*last);
+        }
+        // In-flight momentum was integrated in the old port's pixel units.
+        self.interrupt();
+    }
     pub fn cancel(&mut self) {
         self.capture = None;
+        self.interrupt();
+    }
+    pub fn kinetic(&self) -> bool {
+        self.fling.is_some()
+    }
+    pub fn interrupt(&mut self) {
+        self.fling = None;
+    }
+    pub fn has_capture(&self) -> bool {
+        self.capture.is_some()
+    }
+    pub fn pointer_at(&mut self, at: [f32; 2]) {
+        self.cursor = Some(at);
+    }
+    pub fn cursor(&mut self, owner: &Owner, scene: &Scene, at: Option<[f32; 2]>) {
+        self.cursor = at;
+        self.hover(owner, scene);
     }
     fn axes(&self, p: ScrollHit) -> [Progress; 2] {
         let installed = p.view.axes;
@@ -103,16 +134,28 @@ impl Driver {
             self.hover = hover;
         }
     }
-    pub fn installed(&mut self, owner: &Owner, scene: &Scene) {
+    pub fn installed(&mut self, owner: &Owner, scene: &Scene, changed: bool) {
         self.hover(owner, scene);
-        self.predicted.retain(|key, pending| {
-            scene.hits.scroll_port(*key).is_some_and(|p| {
-                (0..2).any(|i| {
-                    pending[i].epoch == p.view.axes[i].epoch
-                        && pending[i].input > p.view.axes[i].input
-                })
-            })
-        });
+        // A hidden focus ancestor can receive a reveal before its wheel region
+        // is visible. Keep newer predictions until another declaration/geometry
+        // snapshot supersedes or acknowledges them. Never scan all past ports on a pan.
+        if changed {
+            self.predicted.retain(|key, pending| {
+                scene
+                    .navigation
+                    .as_ref()
+                    .and_then(|n| n.enclosure(*key))
+                    .map(|(_, p)| p)
+                    .or_else(|| scene.hits.scroll_port(*key))
+                    .is_some_and(|p| {
+                        (0..2).any(|i| {
+                            pending[i].epoch == p.view.axes[i].epoch
+                                && pending[i].input > p.view.axes[i].input
+                        })
+                    })
+            });
+        }
+        self.reconcile_fling(scene);
         if !self.capture.is_none_or(|c| match c {
             Capture::Thumb {
                 key, axis, epoch, ..
@@ -127,7 +170,7 @@ impl Driver {
             self.cancel();
         }
     }
-    fn commit(&mut self, p: ScrollHit, next: [f64; 2], cx: &Dispatch<'_, '_>) {
+    fn commit(&mut self, p: ScrollHit, next: [f64; 2], cx: &Context<'_, '_>) {
         let mut axes = self.axes(p);
         let moved = std::array::from_fn(|i| next[i].is_finite() && axes[i].pos != next[i]);
         if moved == [false; 2] {
@@ -144,8 +187,8 @@ impl Driver {
             .scroll
             .post(p.key, axes, moved, to.map(|_| Instant::now()));
         cx.owner.actor.notify();
-        if let Some(pid) = to {
-            deliver(cx.env, pid, cx.epoch, p.id, scroll(), axes.map(|p| p.pos));
+        if to.is_some() {
+            cx.payload(p.id, scroll(), Position::from(axes.map(|p| p.pos)));
         }
     }
     fn moved(&self, p: ScrollHit, delta: [f32; 2]) -> [f64; 2] {
@@ -158,7 +201,9 @@ impl Driver {
             }
         })
     }
-    fn wheel(&mut self, s: &Scene, at: [f32; 2], delta: [f32; 2], cx: &Dispatch<'_, '_>) {
+    pub fn wheel(&mut self, s: &Scene, at: [f32; 2], delta: [f32; 2], cx: &Context<'_, '_>) {
+        self.interrupt();
+        self.pointer_at(at);
         // Route the two device components independently (e.g. a horizontal
         // strip inside a vertical page); combine them before notifying a port.
         let [x, y] = at;
@@ -188,7 +233,7 @@ impl Driver {
             self.commit(p, self.moved(p, d), cx);
         }
     }
-    fn press(&mut self, s: &Scene, x: f32, y: f32, cx: &Dispatch<'_, '_>) -> bool {
+    pub fn press(&mut self, s: &Scene, x: f32, y: f32, cx: &Context<'_, '_>) -> bool {
         self.cancel();
         let Some((p, axis)) = s.hits.region_at(s.viewport, x, y) else {
             return false;
@@ -224,10 +269,18 @@ impl Driver {
             start: [x, y],
             last: [x, y],
             active: false,
+            locked: None,
         });
         false
     }
-    fn motion(&mut self, s: &Scene, x: f32, y: f32, cx: &Dispatch<'_, '_>) -> bool {
+    pub fn motion(
+        &mut self,
+        s: &Scene,
+        x: f32,
+        y: f32,
+        competing_swipe: bool,
+        cx: &Context<'_, '_>,
+    ) -> bool {
         match self.capture {
             Some(Capture::Thumb {
                 key, axis, grip, ..
@@ -248,28 +301,36 @@ impl Driver {
                 start,
                 last,
                 active,
+                locked,
                 ..
             }) => {
                 let Some(p) = s.hits.scroll_port(key) else {
                     self.cancel();
                     return false;
                 };
-                if !active && (x - start[0]).hypot(y - start[1]) < 8. {
+                if !active && (x - start[0]).hypot(y - start[1]) < PAN_SLOP {
                     return false;
                 }
                 // Choose the accepting ancestor only after the gesture has a
                 // direction. Once captured it remains the owner up to release.
-                let Some((p, next)) = s
-                    .hits
-                    .ancestors(Some(p))
-                    .take(if active { 1 } else { usize::MAX })
-                    .find_map(|p| {
-                        let next = self.moved(p, p.vector(x - last[0], y - last[1]));
-                        (active || next != self.axes(p).map(|a| a.pos)).then_some((p, next))
-                    })
-                else {
-                    return false;
+                let delta = [x - last[0], y - last[1]];
+                let dominant = usize::from(delta[1].abs() >= delta[0].abs());
+                let choose = |axis: Option<usize>| {
+                    let [dx, dy] = components(delta, axis);
+                    s.hits
+                        .ancestors(Some(p))
+                        .find(|&p| self.moved(p, p.vector(dx, dy)) != self.axes(p).map(|a| a.pos))
                 };
+                let port = if active {
+                    Some(p)
+                } else {
+                    choose(Some(dominant))
+                        .or_else(|| (!competing_swipe).then(|| choose(None)).flatten())
+                };
+                let Some(p) = port else { return false };
+                let locked = locked.or_else(|| competing_swipe.then_some(dominant));
+                let [dx, dy] = components(delta, locked);
+                let next = self.moved(p, p.vector(dx, dy));
                 self.commit(p, next, cx);
                 self.capture = Some(Capture::Pan {
                     key: p.key,
@@ -277,62 +338,18 @@ impl Driver {
                     start,
                     last: [x, y],
                     active: true,
+                    locked,
                 });
                 true
             }
             None => false,
         }
     }
-    /// True means this edge/motion belongs to scrolling, not a click.
-    pub fn dispatch(
-        &mut self,
-        owner: &Owner,
-        env: Env,
-        pid: Option<LocalPid>,
-        f: &Bundle,
-        event: &input::InputEvent,
-    ) -> bool {
-        let cx = Dispatch {
-            owner,
-            env,
-            pid,
-            epoch: f.route.epoch,
-        };
-        use input::InputEvent::*;
-        match event {
-            CursorScroll { dx, dy, x, y } => {
-                self.wheel(&f.scene, [*x, *y], [*dx, *dy], &cx);
-                false
-            }
-            CursorButton {
-                button,
-                action,
-                x,
-                y,
-                ..
-            } if button == input::pointer::BUTTON_LEFT => {
-                if *action == input::ACTION_PRESS {
-                    self.press(&f.scene, *x, *y, &cx)
-                } else {
-                    matches!(
-                        self.capture.take(),
-                        Some(Capture::Thumb { .. } | Capture::Pan { active: true, .. })
-                    )
-                }
-            }
-            CursorPos { x, y } => {
-                self.cursor = Some([*x, *y]);
-                self.hover(owner, &f.scene);
-                self.motion(&f.scene, *x, *y, &cx)
-            }
-            Focused { focused: false } | CursorEntered { entered: false } => {
-                self.cursor = None;
-                self.hover(owner, &f.scene);
-                self.cancel();
-                false
-            }
-            _ => false,
-        }
+}
+fn components(mut d: [f32; 2], axis: Option<usize>) -> [f32; 2] {
+    if let Some(i) = axis {
+        d[1 - i] = 0.;
     }
+    d
 }
 rustler::atoms! {scroll}

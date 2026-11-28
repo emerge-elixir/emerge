@@ -54,12 +54,13 @@ impl Geometry {
 }
 impl Mapping {
     pub fn point(self, (x, y): (f64, f64)) -> (f32, f32) {
+        let [sx, sy] = self.ratios();
+        ((x * sx) as f32, (y * sy) as f32)
+    }
+    pub(super) fn ratios(self) -> [f64; 2] {
         let (w, h) = self.buffer;
         let (lw, lh) = self.geometry.logical;
-        (
-            (x * (f64::from(w) / f64::from(lw))) as f32,
-            (y * (f64::from(h) / f64::from(lh))) as f32,
-        )
+        [f64::from(w) / f64::from(lw), f64::from(h) / f64::from(lh)]
     }
 }
 #[derive(Default)]

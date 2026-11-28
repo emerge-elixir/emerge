@@ -41,6 +41,9 @@ impl<T: Packed<N>, const N: usize> Buffers<T, N> {
             current: 0,
         }
     }
+    pub fn readers(&self) -> usize {
+        self.slots.len()
+    }
     pub fn current(&self) -> &Arc<T> {
         &self.slots[self.current].value
     }

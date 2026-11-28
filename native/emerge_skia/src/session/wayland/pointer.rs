@@ -1,5 +1,8 @@
 use super::*;
-use crate::input::{self, InputEvent::*};
+use crate::{
+    input::{self, InputEvent::*},
+    keys::wayland::{key_from_keysym, mods_from_sctk},
+};
 use sctk::seat::{
     Capability, SeatHandler,
     keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers},
@@ -81,8 +84,19 @@ impl SeatHandler for WindowApp {
                 }
             }
             Capability::Keyboard if self.keyboard.is_none() => {
-                if let Ok(k) = self.seats.get_keyboard(qh, &seat, None) {
+                if let Ok(k) = self.seats.get_keyboard_with_repeat(
+                    qh,
+                    &seat,
+                    None,
+                    self.loop_handle.clone(),
+                    Box::new(|app, k, event| app.key(k, event, input::ACTION_PRESS)),
+                ) {
                     self.keyboard = Some((seat, k));
+                }
+            }
+            Capability::Touch if self.touch.device.is_none() => {
+                if let Ok(t) = self.seats.get_touch(qh, &seat) {
+                    self.touch.device = Some((seat, t));
                 }
             }
             _ => (),
@@ -105,13 +119,34 @@ impl SeatHandler for WindowApp {
             {
                 k.release();
             }
+            self.key_focus = false;
             self.mods = 0;
             self.input(Focused { focused: false });
+        }
+        if cap == Capability::Touch && self.touch.device.as_ref().is_some_and(|(s, _)| s == &seat) {
+            self.remove_touch();
         }
     }
     fn remove_seat(&mut self, c: &Connection, q: &QueueHandle<Self>, s: wl_seat::WlSeat) {
         self.remove_capability(c, q, s.clone(), Capability::Pointer);
-        self.remove_capability(c, q, s, Capability::Keyboard);
+        self.remove_capability(c, q, s.clone(), Capability::Keyboard);
+        self.remove_capability(c, q, s, Capability::Touch);
+    }
+}
+impl WindowApp {
+    fn key(&mut self, k: &wl_keyboard::WlKeyboard, event: KeyEvent, action: u8) {
+        if self.key_focus
+            && self
+                .keyboard
+                .as_ref()
+                .is_some_and(|(_, current)| current == k)
+        {
+            self.input(Key {
+                key: key_from_keysym(event.keysym),
+                action,
+                mods: self.mods,
+            });
+        }
     }
 }
 impl KeyboardHandler for WindowApp {
@@ -119,13 +154,19 @@ impl KeyboardHandler for WindowApp {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        k: &wl_keyboard::WlKeyboard,
         s: &wl_surface::WlSurface,
         _: u32,
         _: &[u32],
         _: &[Keysym],
     ) {
-        if s == self.window.wl_surface() {
+        if s == self.window.wl_surface()
+            && self
+                .keyboard
+                .as_ref()
+                .is_some_and(|(_, current)| current == k)
+        {
+            self.key_focus = true;
             self.input(Focused { focused: true });
         }
     }
@@ -133,11 +174,17 @@ impl KeyboardHandler for WindowApp {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        k: &wl_keyboard::WlKeyboard,
         s: &wl_surface::WlSurface,
         _: u32,
     ) {
-        if s == self.window.wl_surface() {
+        if s == self.window.wl_surface()
+            && self
+                .keyboard
+                .as_ref()
+                .is_some_and(|(_, current)| current == k)
+        {
+            self.key_focus = false;
             self.mods = 0;
             self.input(Focused { focused: false });
         }
@@ -146,43 +193,49 @@ impl KeyboardHandler for WindowApp {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        k: &wl_keyboard::WlKeyboard,
         _: u32,
-        _: KeyEvent,
+        event: KeyEvent,
     ) {
+        self.key(k, event, input::ACTION_PRESS);
     }
     fn repeat_key(
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        k: &wl_keyboard::WlKeyboard,
         _: u32,
-        _: KeyEvent,
+        event: KeyEvent,
     ) {
+        self.key(k, event, input::ACTION_PRESS);
     }
     fn release_key(
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        k: &wl_keyboard::WlKeyboard,
         _: u32,
-        _: KeyEvent,
+        event: KeyEvent,
     ) {
+        self.key(k, event, input::ACTION_RELEASE);
     }
     fn update_modifiers(
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        k: &wl_keyboard::WlKeyboard,
         _: u32,
         m: Modifiers,
         _: RawModifiers,
         _: u32,
     ) {
-        self.mods = (u8::from(m.shift) * input::MOD_SHIFT)
-            | (u8::from(m.ctrl) * input::MOD_CTRL)
-            | (u8::from(m.alt) * input::MOD_ALT)
-            | (u8::from(m.logo) * input::MOD_META);
+        if self
+            .keyboard
+            .as_ref()
+            .is_some_and(|(_, current)| current == k)
+        {
+            self.mods = mods_from_sctk(m);
+        }
     }
 }
 // SCTK can report the same wheel step in three forms. Prefer value120,
@@ -237,8 +290,8 @@ impl PointerHandler for WindowApp {
                     ..
                 } => {
                     let (px, py) = mapping.point((horizontal.absolute, vertical.absolute));
-                    let dx = axis(horizontal, self.display.line_pixels, px);
-                    let dy = axis(vertical, self.display.line_pixels, py);
+                    let dx = axis(horizontal, self.owner.line_pixels, px);
+                    let dy = axis(vertical, self.owner.line_pixels, py);
                     if dx.is_finite() && dy.is_finite() && (dx != 0. || dy != 0.) {
                         self.input(CursorScroll { dx, dy, x, y });
                     }

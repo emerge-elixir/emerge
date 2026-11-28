@@ -100,8 +100,6 @@ struct Display {
     toplevel: Option<wayland::Toplevel>,
     installed: Option<Installed>,
     input: Dispatcher,
-    #[cfg(all(target_os = "linux", feature = "wayland"))]
-    line_pixels: f32,
     next_report: Option<Instant>,
     #[cfg(all(target_os = "linux", feature = "wayland"))]
     callback: Option<stats::Callback>,
@@ -118,6 +116,7 @@ impl Display {
     fn install(
         &mut self,
         owner: &Owner,
+        env: &mut OwnedEnv,
         bundle: Bundle,
         pixels: Pixels,
         handoff: Option<std::ops::Range<Instant>>,
@@ -129,7 +128,6 @@ impl Display {
             self.installed.as_ref().map(|i| i.bundle.route.as_ref()),
             owner.lifecycle.id,
         );
-        self.input.after_draw(owner, &bundle.scene);
         if let Some(span) = handoff {
             owner.handed_off(&bundle, &span);
             #[cfg(all(target_os = "linux", feature = "wayland"))]
@@ -142,17 +140,34 @@ impl Display {
         let cost = now.saturating_duration_since(bundle.started);
         let installed = Installed { bundle, pixels };
         let old = lock(&owner.front)?.replace(installed.clone());
-        self.installed = Some(installed);
+        let previous = self.installed.replace(installed);
+        let new = &self.installed.as_ref().unwrap().bundle;
+        env.run(|e| {
+            self.input
+                .after_draw(owner, e, new, previous.as_ref().map(|i| &i.bundle))
+        });
+        env.clear();
+        drop(previous);
         drop(old);
         owner.submitted(id, revision, now, cost)
     }
-    fn dispatch(&mut self, owner: &Owner, env: Env, event: input::InputEvent) {
+    fn input_deadline(&mut self, owner: &Owner, env: &mut OwnedEnv) -> Option<Instant> {
+        let f = &self.installed.as_ref()?.bundle;
+        if !self.input.kinetic() {
+            return None;
+        }
+        let deadline = env.run(|e| self.input.tick(owner, e, f, Instant::now()));
+        env.clear();
+        deadline
+    }
+    fn dispatch(&mut self, owner: &Owner, env: Env, event: input::InputEvent, at: Instant) {
         owner.stats.measure(stats::Metric::Event, || {
             self.input.dispatch(
                 owner,
                 env,
                 self.installed.as_ref().map(|i| &i.bundle),
                 event,
+                at,
             )
         });
     }
@@ -185,6 +200,7 @@ struct Owner {
     ),
     revision: AtomicU64,
     backend: &'static str,
+    line_pixels: f32,
     api: String,
     stats: stats::Collector,
     selected: std::sync::OnceLock<Selected>,
@@ -329,7 +345,11 @@ fn run_binary(
     };
     while !owner.lifecycle.stop.load(Ordering::Acquire) {
         display.controls(owner, &mut env);
-        let deadline = display.report_due(owner);
+        let deadline = display
+            .report_due(owner)
+            .into_iter()
+            .chain(display.input_deadline(owner, &mut env))
+            .min();
         {
             let mut p = lock(&owner.pipe)?;
             p.submit_open = owner.opportunity(claim.is_none());
@@ -375,6 +395,7 @@ fn run_binary(
             .map_err(|_| "headless output target is gone")?;
             display.install(
                 owner,
+                &mut env,
                 bundle,
                 Pixels::Cpu(rgba),
                 Some(started..Instant::now()),
@@ -428,6 +449,7 @@ fn start(caller: LocalPid, opts: Start) -> Result<ResourceArc<Session>, String> 
         render: Signal::default(),
         revision: AtomicU64::new(0),
         backend: if headless { "headless" } else { "wayland" },
+        line_pixels: opts.scroll_line_pixels,
         api: opts.rendering_api.kind,
         stats: stats::Collector::new(
             opts.stats_enabled,
@@ -453,8 +475,6 @@ fn start(caller: LocalPid, opts: Start) -> Result<ResourceArc<Session>, String> 
         toplevel: None,
         installed: None,
         input: Default::default(),
-        #[cfg(all(target_os = "linux", feature = "wayland"))]
-        line_pixels: opts.scroll_line_pixels,
         next_report: Display::next_report(opts.renderer_stats_log),
         #[cfg(all(target_os = "linux", feature = "wayland"))]
         callback: None,

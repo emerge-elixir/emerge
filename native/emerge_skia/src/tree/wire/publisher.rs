@@ -46,7 +46,7 @@ impl Totals {
 // declaration, not borrowed from a computing tree. In steady state a turn
 // carries no computed stores. Two glyph generations can overlap in measure.
 #[derive(Default, Clone, Copy)]
-struct Capacity([usize; 14]);
+struct Capacity([usize; 15]);
 impl Capacity {
     fn for_tree(t: Totals, keys: usize, tree: Subtree) -> Result<Self> {
         Ok(Self([
@@ -63,6 +63,7 @@ impl Capacity {
             tree.mounts,
             paint::extra_clip_masks(t.clip_nearby, t.scrolls),
             t.scrolls,
+            tree.tab_stops,
             t.materials
                 + 2 * t.scrolls
                 + tree.extra_commands()?
@@ -98,6 +99,7 @@ impl Capacity {
             mounts,
             clip_nearby,
             scrolls,
+            stops,
             extra,
         ] = self.0;
         // Conservative byte credits, including the builder, five readers,
@@ -116,7 +118,8 @@ impl Capacity {
             128,
             320,
             1024,
-            4096,
+            4096 + 2048 * usize::from(stops != 0), // focus links + six port-view buffers
+            1024,                                  // stops and their attachment-to-ordinal lookup
             1536,
         ];
         let charge = self
@@ -149,6 +152,7 @@ impl Capacity {
         t.output
             .reserve_scrolls(scrolls, owners, words, Budget(0))?;
         t.output.reserve_bands(escapes, groups, Budget(0))?;
+        t.output.reserve_navigation(stops, scrolls, Budget(0))?;
         t.output
             .reserve_materials(keys, materials, bytes, words, clip_nearby, Budget(0))?;
         t.layers
@@ -473,6 +477,16 @@ impl Publisher {
             let r = Record {
                 _grant: backing.split(RECORD),
                 id: s.id,
+                autofocus_mount: old.map_or_else(
+                    || {
+                        if block.attrs.autofocus && block.attrs.actions.focusable() {
+                            e.topology + 1
+                        } else {
+                            0
+                        }
+                    },
+                    |r| r.autofocus_mount,
+                ),
                 shape: s.shape,
                 parent,
                 slot: s.slot,
@@ -496,6 +510,7 @@ impl Publisher {
                 _grant: backing.split(RECORD),
                 id,
                 shape: old.shape,
+                autofocus_mount: old.autofocus_mount,
                 parent: old.parent,
                 slot: old.slot,
                 stats: old.stats,
@@ -628,6 +643,7 @@ impl Publication {
         let e = &mut t.elements;
         for &k in self.removed.iter() {
             if e.slots.contains_key(k) {
+                t.layers.navigation_changed |= e.slots[k].stats.tab_stops != 0;
                 t.layers.evict(k);
                 e.evict(k);
             }

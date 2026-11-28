@@ -8,7 +8,11 @@ On binary headless and Wayland, each installed frame carries its scroll regions,
 
 The [display driver](../../native/emerge_skia/src/session/scroll.rs) accumulates from the last installed or newer pending fraction. It posts an absolute receipt, wakes the tree actor, then sends at most one `%{x: float, y: float}` for each changed emitting port. Raw `:pointer_scroll` subscription is independent. The actor checks attachment, axis epoch and receipt before applying the update. A matching callback echo within five seconds is not a jump. Resize, application proposals and hover changes do not emit callbacks. A held or rejected handoff cannot replace the installed route. [Controller and installed-frame controls](../../plans/scrolling.md#verification).
 
-Wayland chooses one source per axis: use `value120 / 120` in preference to discrete steps, multiplying either by `scroll_line_pixels` (startup default `30.0`). With neither, convert the continuous surface delta by the installed buffer-to-surface ratio. Headless injection already supplies pixel deltas. This path does not implement keyboard reveal, inertia, editor scrolling or general gestures.
+Wayland chooses one source per axis: use `value120 / 120` in preference to discrete steps, multiplying either by `scroll_line_pixels` (startup default `30.0`). With neither, convert the continuous surface delta by the installed buffer-to-surface ratio. Headless injection already supplies pixel deltas.
+
+Tab uses a separate [installed focus order](../../native/emerge_skia/src/tree/paint/navigation.rs), not pointer hit rectangles. Offscreen controls can be focused and revealed without receiving offscreen clicks. Keyboard scroll, reveal, wheel, pan and touch release all update the same per-axis controller. Routed focus, blur and press are two-tuples with no payload; the viewport resolves them against the installed route epoch.
+
+[One dispatcher](../../native/emerge_skia/src/session/dispatch/gesture.rs) arbitrates chrome, explicit drag, pan, swipe and tap. Only the primary source owns a gesture; raw observers can see every contact. Wayland keeps the surface position for its coordinate-less up and cancel. If a new buffer changes the coordinate ratio, a held contact is rebound, not moved. A touch fling samples elapsed time and waits for an installed receipt before another update. Editor input, pinch/zoom and focus styling are separate. [Behavior and isolation checks](../../plans/other-scroll-inputs.md#verification).
 
 ## Overview
 

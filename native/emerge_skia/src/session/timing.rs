@@ -27,6 +27,9 @@ impl Clock {
         self.anchor = None;
         self.observed = None;
     }
+    pub fn period(&self) -> Duration {
+        self.period.unwrap_or(HEADLESS_PERIOD)
+    }
     pub fn cadence(&mut self, d: Duration) {
         self.period = Some(d);
         self.pending = None;

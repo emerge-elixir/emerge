@@ -14,7 +14,7 @@ enum Op {
     Stats,
 }
 enum Command {
-    Input(input::InputEvent),
+    Input(input::InputEvent, Instant),
     Mask(u32),
     InputTarget(Option<LocalPid>),
     LogTarget(Option<LocalPid>),
@@ -48,8 +48,8 @@ impl Envelope {
         };
         let _ = env.send_and_clear(&pid, |e| {
             let result = match self.cmd {
-                Command::Input(event) => {
-                    s.dispatch(owner, e, event);
+                Command::Input(event, at) => {
+                    s.dispatch(owner, e, event, at);
                     atoms::ok().encode(e)
                 }
                 Command::Mask(mask) => {
@@ -172,32 +172,34 @@ fn renderer_control_nif(
             Ok(n)
         }
     };
-    let cmd =
-        match op {
-            Op::Input => {
-                #[cfg(all(target_os = "linux", feature = "wayland"))]
-                if !matches!(r.wake, Wake::Binary(_)) {
-                    return Err(rustler::Error::Term(Box::new(
-                        "send_input is only available for binary headless output",
-                    )));
-                }
-                Command::Input(dispatch::decode(payload).map_err(|_| {
+    let cmd = match op {
+        Op::Input => {
+            #[cfg(all(target_os = "linux", feature = "wayland"))]
+            if !matches!(r.wake, Wake::Binary(_)) {
+                return Err(rustler::Error::Term(Box::new(
+                    "send_input is only available for binary headless output",
+                )));
+            }
+            Command::Input(
+                dispatch::decode(payload).map_err(|_| {
                     rustler::Error::Term(Box::new("invalid or unsupported raw input"))
-                })?)
-            }
-            Op::Mask => Command::Mask(mask(payload.decode()?)?),
-            Op::InputTarget => Command::InputTarget(payload.decode()?),
-            Op::LogTarget => Command::LogTarget(payload.decode()?),
-            Op::FrameRate => Command::FrameRate(
-                interval(payload.decode()?).map_err(|e| rustler::Error::Term(Box::new(e)))?,
-            ),
-            Op::Configure => {
-                let c: Control = payload.decode()?;
-                mask(c.input_mask)?;
-                Command::Configure(c, observer)
-            }
-            Op::Stats => Command::Stats(payload.decode()?),
-        };
+                })?,
+                Instant::now(),
+            )
+        }
+        Op::Mask => Command::Mask(mask(payload.decode()?)?),
+        Op::InputTarget => Command::InputTarget(payload.decode()?),
+        Op::LogTarget => Command::LogTarget(payload.decode()?),
+        Op::FrameRate => Command::FrameRate(
+            interval(payload.decode()?).map_err(|e| rustler::Error::Term(Box::new(e)))?,
+        ),
+        Op::Configure => {
+            let c: Control = payload.decode()?;
+            mask(c.input_mask)?;
+            Command::Configure(c, observer)
+        }
+        Op::Stats => Command::Stats(payload.decode()?),
+    };
     r.enqueue(Envelope {
         reply: Some((env.pid(), id)),
         cmd,

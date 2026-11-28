@@ -159,6 +159,43 @@ fn long_scroll_window(c: &Counter) {
     assert!(r.tree.patch(&grow).is_err());
     assert_eq!(r.tree.encode(), before);
 }
+fn reserved_focus_order(c: &Counter) {
+    let ids = (2..514).collect::<Vec<_>>();
+    let attrs = block(&[px(1, 50.), px(2, 20.), vec![61, 1]]);
+    let bytes = upload(
+        &std::iter::once(node(
+            1,
+            3,
+            block(&[px(1, 60.), px(2, 40.), vec![7, 1]]),
+            &ids,
+        ))
+        .chain(ids.iter().map(|&id| node(id, 4, attrs.clone(), &[])))
+        .collect::<Vec<_>>(),
+    );
+    let mut live = Tree::for_session(0);
+    Publisher::new(0)
+        .apply(&bytes, 1.)
+        .unwrap()
+        .install(&mut live);
+    let mut detached = Tree::default();
+    detached.upload(&bytes).unwrap();
+    for t in [&mut detached, &mut live] {
+        c.zero(
+            "first focus order, hidden stop and release/reuse after a far jump",
+            || {
+                t.refresh(60., 40., 1.).unwrap();
+                let front = t.seal().unwrap();
+                let nav = front.navigation.as_ref().unwrap();
+                assert_eq!(nav.tab(None, true).unwrap().id, 513);
+                drop(front);
+                assert!(scrolling::set_input(t, 1, [0., 1.], 1, None));
+                t.refresh(60., 40., 1.).unwrap();
+                let end = t.seal().unwrap();
+                assert_eq!(end.hits.listener_at(end.viewport, 5., 25.).unwrap().id, 513);
+            },
+        );
+    }
+}
 fn nearby_bands(c: &Counter) {
     use nearby::mounted;
     let n = MAX_DEPTH as u64 + 1;
@@ -1499,6 +1536,7 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     empty_exporters(&c);
     scroll_projection(&c);
     long_scroll_window(&c);
+    reserved_focus_order(&c);
     let mut split = Raster::default();
     split.tree.upload(&transforms::split_prose()).unwrap();
     c.zero(

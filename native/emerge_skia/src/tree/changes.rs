@@ -235,6 +235,16 @@ impl Layers {
             }
             let shared_order =
                 shared.is_some_and(|(a, b)| !std::sync::Arc::ptr_eq(&a.children, &b.children));
+            if e.slots[k].stats.tab_stops != 0
+                && (change.cold
+                    || change.reattached
+                    || moved
+                    || shared_order
+                    || change.order.is_some()
+                    || slot_change.is_some())
+            {
+                self.navigation_changed = true;
+            }
             if let Some(p) = e.inline_host(k) {
                 let old_children = change
                     .order
@@ -352,6 +362,13 @@ impl Layers {
         let next = &e.attrs[k];
         let depth = e.depth(k);
         let shape = e.slots[k].shape;
+        self.navigation_changed |= old.actions.focusable() != next.actions.focusable()
+            || (e.slots[k].stats.tab_stops != 0
+                && (old.actions != next.actions
+                    || old.autofocus != next.autofocus
+                    || old.pose != next.pose
+                    || old.scroll.port() != next.scroll.port()
+                    || old.decor.border != next.decor.border));
         if old.scroll != next.scroll
             || (next.scroll.port() && old.sizing.padding != next.sizing.padding)
         {
@@ -478,11 +495,11 @@ impl Layers {
             || old.decor.differs(old_raw, next.decor, e.raw(k));
         let output = Outputs::changed(
             paint_changed,
-            old.click != next.click
+            old.actions != next.actions
                 || old.clip_nearby != next.clip_nearby
                 || clip_changed
                 || old.pose != next.pose
-                || ((next.click || e.slots[k].slot.is_some_and(Slot::escapes))
+                || ((next.actions.any() || e.slots[k].slot.is_some_and(Slot::escapes))
                     && next.posed()
                     && old.image_host_clip != next.image_host_clip),
         );

@@ -254,8 +254,8 @@ impl Output {
         let corners = e.attrs[owner].decor.radii(owner_ctx.scale);
         if side == 1 {
             let hits = &mut self.hits.build;
-            if !((part != Part::Content && e.attrs[owner].click)
-                || (ink.is_some() && e.attrs[source].click))
+            if !((part != Part::Content && e.attrs[owner].actions.any())
+                || (ink.is_some() && e.attrs[source].actions.any()))
             {
                 return;
             }
@@ -266,7 +266,7 @@ impl Output {
                     (owner, (part != Part::Content).then_some(outer)),
                     (source, ink.filter(|_| source != owner)),
                 ] {
-                    let Some(space) = space.filter(|_| e.attrs[target].click) else {
+                    let Some(space) = space.filter(|_| e.attrs[target].actions.any()) else {
                         continue;
                     };
                     let rect = if target == owner {
@@ -278,6 +278,7 @@ impl Output {
                         let frame = l.painted(target).frame;
                         hits.items.push(Hit {
                             kind: HitKind::Listener,
+                            actions: e.attrs[target].actions,
                             wheel,
                             scope: space.line_scope(outer, scope, mask),
                             key: Attachment(target, e.slots[target].attachment),

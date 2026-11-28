@@ -237,6 +237,8 @@ pub(super) struct Layers {
     local_measure: SecondaryMap<Key, Demand>,
     local_frames: SecondaryMap<Key, Rect>,
     pub(super) scroll: scroll::Ports,
+    pub(super) navigation_changed: bool,
+    pub(super) focus_ports_changed: bool,
     pub(super) intrinsic: intrinsic::Intrinsic,
     // Glyph changes and intrinsic size changes have different readers.
     pub(super) runs: SecondaryMap<Key, Run>,
@@ -1739,6 +1741,13 @@ impl Layers {
         let view = self
             .scroll
             .settle(e, k, self.local_frames[k], &self.frames, scale);
+        if e.slots[k].stats.tab_stops != 0
+            && (view.range != previous.range
+                || view.emit != previous.emit
+                || view.axes.map(|p| p.epoch) != previous.axes.map(|p| p.epoch))
+        {
+            self.focus_ports_changed = true;
+        }
         if view != previous {
             let draw = view.range != previous.range || view.offset() != previous.offset();
             self.invalidate_composition(
@@ -1800,6 +1809,11 @@ impl Layers {
             return;
         }
         self.paint.insert(k, next);
+        if e.slots[k].stats.tab_stops != 0
+            && old.is_none_or(|p| p.frame != f || p.zoom != next.zoom)
+        {
+            self.navigation_changed = true;
+        }
         let content_edge = old.and_then(|p| p.content) != content;
         if content_edge {
             // Initialize storage when a key enters scroll content, not up to a
@@ -1821,7 +1835,8 @@ impl Layers {
             self.invalidate_composition(k, e.depth(k), Outputs::Both);
         }
         if let Some(p) = ctx.inline_host {
-            let hit = a.click && old.is_none_or(|ctx| ctx.scale != next.scale || ctx.frame != f);
+            let hit =
+                a.actions.any() && old.is_none_or(|ctx| ctx.scale != next.scale || ctx.frame != f);
             self.invalidate_composition(
                 p,
                 e.depth(p),
@@ -1857,7 +1872,7 @@ impl Layers {
             || (guarded
                 || escaping
                 || a.posed()
-                || a.click
+                || a.actions.any()
                 || shape == Shape::Paragraph
                 || a.decor.radius != [0.; 4])
                 && (geometry_changed || old.is_none_or(|p| p.scale != next.scale));

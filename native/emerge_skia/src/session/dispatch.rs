@@ -4,11 +4,14 @@ use crate::{
     binary,
     input::{self, InputEvent, InputHandler},
     keys::CanonicalKey,
-    tree::{Attachment, Scene},
+    tree::{Attachment, Scene, Stop, interaction::Actions},
 };
-use rustler::{Atom, Env, Error, LocalPid, NifResult, Term};
+use rustler::{Atom, Encoder, Env, Error, LocalPid, NifResult, Term};
+use std::time::Instant;
+mod gesture;
+use gesture::{Gesture, Source};
 
-rustler::atoms! { press, release, pointer_move, pointer_button, pointer_scroll, pointer_enter, focus }
+rustler::atoms! { press, release, pointer_move, pointer_button, pointer_scroll, pointer_enter, focus, blur }
 fn action(a: Atom) -> NifResult<u8> {
     if a == press() {
         Ok(input::ACTION_PRESS)
@@ -84,6 +87,21 @@ pub(super) fn decode(raw: Term) -> NifResult<InputEvent> {
         let (dx, dy) = point(delta)?;
         let (x, y) = point(pos)?;
         InputEvent::CursorScroll { dx, dy, x, y }
+    } else if tag == input::touch() {
+        let (id, phase, pos): (u64, Atom, (f32, f32)) = payload.decode()?;
+        let phase = if phase == input::down() {
+            input::TouchPhase::Down
+        } else if phase == input::move_touch() {
+            input::TouchPhase::Move
+        } else if phase == input::up() {
+            input::TouchPhase::Up
+        } else if phase == input::cancel() {
+            input::TouchPhase::Cancel
+        } else {
+            return Err(Error::BadArg);
+        };
+        let (x, y) = point(pos)?;
+        InputEvent::Touch { id, phase, x, y }
     } else if tag == pointer_enter() {
         InputEvent::CursorEntered {
             entered: payload.decode()?,
@@ -112,31 +130,138 @@ pub(super) fn decode(raw: Term) -> NifResult<InputEvent> {
 pub(super) struct Dispatcher {
     pub observer: InputHandler,
     pub target: Option<LocalPid>,
-    pressed: Option<Attachment>,
+    gesture: Option<Gesture>,
+    focus: Option<Attachment>,
+    autofocus_mount: u64,
+    blurred: bool,
     scroll: super::scroll::Driver,
 }
 #[derive(rustler::NifMap)]
-struct Position {
+pub(super) struct Position {
     x: f64,
     y: f64,
 }
-pub(super) fn deliver(env: Env, pid: LocalPid, epoch: u64, id: u64, kind: Atom, [x, y]: [f64; 2]) {
-    let event = (binary(env, &id.to_be_bytes()), kind, Position { x, y });
-    if epoch == 0 {
-        let _ = env.send(&pid, (input::emerge_skia_event(), event));
-    } else {
-        let _ = env.send(&pid, (super::emerge_skia_routed(), epoch, event));
+impl From<[f64; 2]> for Position {
+    fn from([x, y]: [f64; 2]) -> Self {
+        Self { x, y }
+    }
+}
+// No env is stored in the dispatcher or the gesture.
+pub(super) struct Context<'a, 'env> {
+    pub owner: &'a super::Owner,
+    pub pid: Option<LocalPid>,
+    env: Env<'env>,
+    epoch: u64,
+}
+impl<'a, 'env> Context<'a, 'env> {
+    fn new(
+        owner: &'a super::Owner,
+        env: Env<'env>,
+        pid: Option<LocalPid>,
+        f: &super::Bundle,
+    ) -> Self {
+        Self {
+            owner,
+            env,
+            pid,
+            epoch: f.route.epoch,
+        }
+    }
+    fn send(&self, event: impl Encoder) {
+        if let Some(pid) = self.pid {
+            if self.epoch == 0 {
+                let _ = self.env.send(&pid, (input::emerge_skia_event(), event));
+            } else {
+                let _ = self
+                    .env
+                    .send(&pid, (super::emerge_skia_routed(), self.epoch, event));
+            }
+        }
+    }
+    pub fn payload(&self, id: u64, kind: Atom, value: impl Encoder) {
+        if self.pid.is_some() {
+            self.send((binary(self.env, &id.to_be_bytes()), kind, value));
+        }
+    }
+    fn bare(&self, id: u64, kind: Atom) {
+        if self.pid.is_some() {
+            self.send((binary(self.env, &id.to_be_bytes()), kind));
+        }
     }
 }
 impl Dispatcher {
-    pub fn after_draw(&mut self, owner: &super::Owner, scene: &Scene) {
-        self.scroll.installed(owner, scene);
-        if self.pressed.is_some_and(|key| !scene.hits.has_target(key)) {
-            self.pressed = None
+    pub fn after_draw(
+        &mut self,
+        owner: &super::Owner,
+        env: Env,
+        f: &super::Bundle,
+        old: Option<&super::Bundle>,
+    ) {
+        let s = &f.scene;
+        let changed = old.is_none_or(|o| {
+            o.revision != f.revision
+                || o.id.generation != f.id.generation
+                || !same_navigation(&o.scene, s)
+        });
+        self.scroll.installed(owner, s, changed);
+        if let Some(g) = self.gesture.as_mut().filter(|g| !g.valid(s, &self.scroll)) {
+            g.suppress();
+            self.scroll.cancel();
+        }
+        let nav = s.navigation.as_ref();
+        self.focus = self.focus.filter(|&k| nav.and_then(|n| n.get(k)).is_some());
+        if let Some((stamp, key)) = nav.and_then(|n| n.autofocus())
+            && stamp > self.autofocus_mount
+        {
+            self.autofocus_mount = stamp;
+            if !self.blurred {
+                self.focus_to(
+                    s,
+                    nav.and_then(|n| n.get(key)),
+                    &Context::new(owner, env, self.target, f),
+                );
+            }
         }
     }
+    fn focus_to(&mut self, s: &Scene, next: Option<Stop>, cx: &Context<'_, '_>) {
+        if self.focus == next.map(|t| t.key) {
+            return;
+        }
+        let nav = s.navigation.as_ref();
+        if let Some(old) = self.focus.and_then(|k| nav?.get(k))
+            && old.actions.has(Actions::BLUR)
+        {
+            cx.bare(old.id, blur());
+        }
+        self.focus = next.map(|t| t.key);
+        if let Some((stop, nav)) = next.zip(nav) {
+            self.scroll.interrupt();
+            if stop.actions.has(Actions::FOCUS) {
+                cx.bare(stop.id, focus());
+            }
+            self.scroll.reveal(nav, stop, cx);
+        }
+    }
+    #[cfg(all(target_os = "linux", feature = "wayland"))]
+    pub fn interrupt_momentum(&mut self) {
+        self.scroll.interrupt();
+    }
+    pub fn kinetic(&self) -> bool {
+        self.scroll.kinetic()
+    }
+    pub fn tick(
+        &mut self,
+        owner: &super::Owner,
+        env: Env,
+        f: &super::Bundle,
+        now: Instant,
+    ) -> Option<Instant> {
+        self.scroll
+            .tick(&f.scene, &Context::new(owner, env, self.target, f), now)
+    }
     pub fn set_target(&mut self, target: Option<LocalPid>) {
-        self.pressed = None;
+        self.gesture = None;
+        self.focus = None;
         self.scroll.cancel();
         self.target = target;
     }
@@ -146,46 +271,84 @@ impl Dispatcher {
         env: Env,
         frame: Option<&super::Bundle>,
         event: InputEvent,
+        at: Instant,
     ) {
         if let Some(pid) = self.target
             && self.observer.accepts(&event)
         {
             let _ = env.send(&pid, (input::emerge_skia_event(), &event));
         }
-        if let Some(f) = frame
-            && self.scroll.dispatch(owner, env, self.target, f, &event)
-        {
-            self.pressed = None;
-            return;
+        if let InputEvent::Focused { focused } = event {
+            self.blurred = !focused;
         }
-        let Some(pid) = self.target else { return };
+        let Some(f) = frame else { return };
+        let cx = Context::new(owner, env, self.target, f);
+        let s = &f.scene;
+        use input::{InputEvent::*, TouchPhase::*};
         match event {
-            InputEvent::CursorButton {
-                ref button,
+            Touch { id, phase, x, y } => self.contact(s, Source::Touch(id), phase, [x, y], at, &cx),
+            CursorButton {
+                button,
                 action,
                 x,
                 y,
                 ..
             } if button == input::pointer::BUTTON_LEFT => {
-                let hit = frame.and_then(|f| f.scene.hits.target_at(f.scene.viewport, x, y));
-                if action == input::ACTION_PRESS {
-                    self.pressed = hit.map(|h| h.0);
-                } else if let (Some(pressed), Some((key, id, x, y))) = (self.pressed.take(), hit)
-                    && key == pressed
+                self.scroll.pointer_at([x, y]);
+                self.contact(
+                    s,
+                    Source::Mouse,
+                    if action == input::ACTION_PRESS {
+                        Down
+                    } else {
+                        Up
+                    },
+                    [x, y],
+                    at,
+                    &cx,
+                );
+            }
+            CursorPos { x, y } => {
+                self.scroll.cursor(owner, s, Some([x, y]));
+                self.contact(s, Source::Mouse, Move, [x, y], at, &cx);
+            }
+            CursorScroll { dx, dy, x, y } => self.scroll.wheel(s, [x, y], [dx, dy], &cx),
+            CursorEntered { entered: false } => {
+                self.scroll.cursor(owner, s, None);
+                self.cancel_contact(s, Some(Source::Mouse), &cx);
+            }
+            Focused { focused: false } => {
+                self.scroll.cursor(owner, s, None);
+                self.cancel_contact(s, None, &cx);
+                self.focus_to(s, None, &cx);
+            }
+            Key {
+                key,
+                action: input::ACTION_PRESS,
+                mods,
+            } if !self.blurred
+                && (mods == 0 || (key == CanonicalKey::Tab && mods == input::MOD_SHIFT)) =>
+            {
+                let nav = s.navigation.as_ref();
+                let focused = self.focus.and_then(|k| nav?.get(k));
+                if key == CanonicalKey::Tab {
+                    self.focus_to(s, nav.and_then(|n| n.tab(self.focus, mods != 0)), &cx);
+                } else if key == CanonicalKey::Enter
+                    && let Some(t) = focused.filter(|t| t.actions.has(Actions::PRESS))
                 {
-                    deliver(
-                        env,
-                        pid,
-                        frame.map_or(0, |f| f.route.epoch),
-                        id,
-                        input::click(),
-                        [x, y],
-                    );
+                    cx.bare(t.id, press());
+                } else {
+                    self.scroll.key(s, focused, key, owner.line_pixels, &cx);
                 }
             }
-            InputEvent::Focused { focused: false }
-            | InputEvent::CursorEntered { entered: false } => self.pressed = None,
             _ => (),
         }
+    }
+}
+fn same_navigation(a: &Scene, b: &Scene) -> bool {
+    match (&a.navigation, &b.navigation) {
+        (Some(a), Some(b)) => a.same_receipts(b),
+        (None, None) => true,
+        _ => false,
     }
 }

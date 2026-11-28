@@ -65,12 +65,22 @@ pub(crate) struct ScrollHit {
     pub id: u64,
     pub view: scroll::View,
     parent: u32,
-    frame: Rect,
+    pub frame: Rect,
     // Captured drags can leave the shape. Keep the absolute inverse too;
     // wheel vectors do not include the translation of its pivot.
     inverse: Option<Matrix>,
 }
 impl ScrollHit {
+    pub(super) fn unprojected(key: Attachment, id: u64, view: scroll::View, frame: Rect) -> Self {
+        Self {
+            key,
+            id,
+            view,
+            frame,
+            parent: 0,
+            inverse: None,
+        }
+    }
     pub fn bar(self, axis: usize) -> Option<Bar> {
         Bar::new(self.frame, axis, self.view)
     }
@@ -191,6 +201,7 @@ impl Hits {
         let wheel = self.items.len() as u32 + 1;
         self.items.push(Hit {
             kind: HitKind::Port,
+            actions: Actions::default(),
             wheel,
             key,
             id,
@@ -207,6 +218,13 @@ impl Hits {
     fn enclosing(&self, link: u32) -> Option<ScrollHit> {
         link.checked_sub(1)
             .and_then(|i| self.scroll_port(self.items[i as usize].key))
+    }
+    pub fn keyboard_ports(&self) -> impl Iterator<Item = ScrollHit> {
+        self.items
+            .iter()
+            .rev()
+            .filter(|h| h.kind == HitKind::Port)
+            .map(|h| self.scrolls[&h.key])
     }
     pub fn ancestors(&self, first: Option<ScrollHit>) -> impl Iterator<Item = ScrollHit> {
         std::iter::successors(first, |p| self.enclosing(p.parent))
@@ -265,6 +283,7 @@ impl Output {
         } else if let Some(rect) = ctx.frame.intersection(ctx.clip) {
             self.hits.build.items.push(Hit {
                 kind: HitKind::Bars,
+                actions: Actions::default(),
                 wheel: 0,
                 key: Attachment(k, e.slots[k].attachment),
                 id: e.slots[k].id,

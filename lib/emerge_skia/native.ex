@@ -540,7 +540,8 @@ defmodule EmergeSkia.Native do
   - 0x20: Cursor enter/exit events
   - 0x40: Resize events
   - 0x80: Focus events
-  - 0xFF: All events
+  - 0x100: Direct touch contacts
+  - 0x1FF: All input events
   """
   @spec set_input_mask(reference(), non_neg_integer()) :: :ok
   def set_input_mask(renderer, mask), do: control(renderer, :mask, mask)
@@ -571,6 +572,11 @@ defmodule EmergeSkia.Native do
 
   defp bounded_input?({:text_commit, {text, mods}}),
     do: bounded_binary?(text, 65_536) and modifiers?(mods, 4)
+
+  defp bounded_input?({:touch, {id, phase, xy}}),
+    do:
+      is_integer(id) and id in 0..0xFFFF_FFFF_FFFF_FFFF and phase in [:down, :move, :up, :cancel] and
+        point?(xy)
 
   defp bounded_input?({:pointer_move, xy}), do: point?(xy)
   defp bounded_input?({:pointer_scroll, {delta, xy}}), do: point?(delta) and point?(xy)

@@ -1,3 +1,6 @@
+#[cfg(all(target_os = "linux", feature = "wayland"))]
+pub(crate) mod wayland;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CanonicalKey {
     A,

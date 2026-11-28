@@ -152,10 +152,10 @@ defmodule Emerge.UI.Event do
   drag state when removing or hiding a control.
 
   Use drag phases for captured movement/release; ordinary enter/leave still use
-  physical hit testing. Primary touch uses the existing mouse emulation; keyboard
-  activation never starts a drag. Capture cannot be combined on the same element
-  with click/press, swipe or virtual-key handlers, or attached to native text
-  inputs or sliders, which own their drag behavior. See `on_drag/1` for an example.
+  physical hit testing. Primary touch uses the same drag phases without emitting
+  synthetic raw mouse events; keyboard activation never starts a drag. Capture
+  cannot be combined on the same element with click/press, swipe or virtual-key
+  handlers, or attached to native text inputs or sliders, which own their drag behavior. See `on_drag/1` for an example.
 
   ## Input And Focus
 

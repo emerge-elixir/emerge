@@ -364,13 +364,8 @@ fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
                     s => return Err(format!("unsupported font style {s}")),
                 })
             }
-            40 => {
-                a.click = match r.byte()? {
-                    0 => false,
-                    1 => true,
-                    _ => return Err("invalid click flag".into()),
-                }
-            }
+            tag @ (40 | 57 | 58 | 61 | 71..=74 | 88) => a.actions.set(tag, r.flag()?),
+            76 => a.autofocus = r.flag()?,
             tag => shape.decode_attr(tag, &mut r, raw, &mut a)?,
         }
     }
@@ -379,6 +374,9 @@ fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
     }
     if a.scroll.port() && matches!(shape, Shape::Text | Shape::Empty | Shape::Image) {
         return Err("scrollbars require a block container".into());
+    }
+    if a.actions.drag() && a.actions.has_competitor() {
+        return Err("on_drag conflicts with activation or swipe".into());
     }
     a.pose_declared = layout_angle || paint_angle || paint_scale;
     if layout_angle && paint_angle || a.layout_scale.is_some() && paint_scale {

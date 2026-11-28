@@ -299,10 +299,11 @@ impl WindowApp {
                 };
                 #[cfg(feature = "stage-probes")]
                 self.pin_target(&frame.value.bundle, target.clone());
-                self.installed = Some(mapping);
+                self.install_mapping(mapping);
                 self.frame_pending = self.callback_armed;
                 self.display.install(
                     &self.owner,
+                    &mut self.env,
                     frame.value.bundle,
                     Pixels::Gpu(target),
                     Some(t),
@@ -363,8 +364,13 @@ impl WindowApp {
                         && matches!(&i.pixels,Pixels::Gpu(t) if Arc::ptr_eq(t,image))
                 })
             {
-                self.display
-                    .install(owner, f.value.bundle, Pixels::Gpu(image.clone()), None)?;
+                self.display.install(
+                    owner,
+                    &mut self.env,
+                    f.value.bundle,
+                    Pixels::Gpu(image.clone()),
+                    None,
+                )?;
             } else {
                 self.protocols
                     .apply(self.window.wl_surface(), mapping.geometry);

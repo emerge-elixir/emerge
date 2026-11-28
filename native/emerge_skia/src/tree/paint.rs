@@ -3,6 +3,9 @@ mod bands;
 mod scrollbars;
 use bands::{Bands, Branch, Groups};
 pub(crate) use scrollbars::ScrollHit;
+mod navigation;
+use interaction::Actions;
+pub(crate) use navigation::{Navigation, Stop};
 mod buffers;
 mod clips;
 mod coverage;
@@ -144,6 +147,7 @@ enum HitKind {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Hit {
     kind: HitKind,
+    actions: Actions,
     wheel: u32,
     scope: Scope,
     key: Attachment,
@@ -253,7 +257,7 @@ impl PaintContext {
     fn hit(self, e: &Elements, k: Key) -> Option<Hit> {
         let a = &e.attrs[k];
         let escapes = e.slots[k].slot.is_some_and(Slot::escapes);
-        if !a.click && !escapes {
+        if !a.actions.any() && !escapes {
             return None;
         }
         let clip = if a.posed() && e.slots[k].shape == Shape::Image {
@@ -270,7 +274,8 @@ impl PaintContext {
             wheel: 0,
             scope: Scope::default(),
             key: Attachment(k, e.slots[k].attachment),
-            id: if a.click { e.slots[k].id } else { 0 },
+            actions: a.actions,
+            id: if a.actions.any() { e.slots[k].id } else { 0 },
             rect: self.frame.intersection(clip)?,
             origin: [self.frame.x, self.frame.y],
             scale: self.scale,
@@ -369,12 +374,12 @@ pub(super) fn compose(l: &mut Layers, e: &Elements, k: Key, requested: Outputs) 
             *changed = hit != next.hit
                 || rounded
                 || next.rounded
-                || (a.click && e.slots[k].shape == Shape::Image);
+                || (a.actions.any() && e.slots[k].shape == Shape::Image);
             next.rounded = rounded;
             next.hit = hit;
             let unprojected = ctx.content.is_some()
                 && hit.is_none()
-                && (a.click || e.slots[k].slot.is_some_and(Slot::escapes));
+                && (a.actions.any() || e.slots[k].slot.is_some_and(Slot::escapes));
             *changed |= unprojected;
             hit.is_some() || unprojected
         };
@@ -585,6 +590,7 @@ pub(super) struct Output {
     stack: Vec<(Key, Visit, Scope)>,
     draw: Buffers<Drawing, 8>,
     hits: Buffers<Hits, 4>,
+    navigation: Option<navigation::Bank>,
     installed: [Option<(Key, u64)>; 2],
     pending: [Option<(Key, u64)>; 2],
     dirty: [bool; 2],
@@ -1237,26 +1243,61 @@ impl Hits {
     pub(super) fn ids(&self) -> impl Iterator<Item = u64> + '_ {
         self.items.iter().map(|h| h.id)
     }
+    #[cfg(test)]
     pub(crate) fn has_target(&self, key: Attachment) -> bool {
-        self.items.iter().any(|h| {
-            h.id != 0 && h.key == key && matches!(h.kind, HitKind::Listener | HitKind::Escape)
-        })
+        self.items
+            .iter()
+            .any(|h| h.key == key && h.actions.has(Actions::CLICK))
     }
+    #[cfg(test)]
     pub(crate) fn target_at(&self, v: Rect, x: f32, y: f32) -> Option<(Attachment, u64, f64, f64)> {
+        self.listener_at(v, x, y)
+            .filter(|h| h.actions.has(Actions::CLICK))
+            .map(|h| (h.key, h.id, h.local[0], h.local[1]))
+    }
+    // Captured endpoints use the installed source's current plane and origin,
+    // not a second point hit (the pointer may now be outside every clip).
+    pub(crate) fn captured(&self, key: Attachment, x: f32, y: f32) -> Option<Listener> {
+        let h = self
+            .items
+            .iter()
+            .rev()
+            .find(|h| h.key == key && h.actions.any())?;
+        let p = if let Some(plane) = self.planes.get(h.scope.plane) {
+            plane.matrix.invert()?.map_point((x, y))
+        } else {
+            (x, y).into()
+        };
+        (p.x.is_finite() && p.y.is_finite()).then(|| h.listener(p.x, p.y))
+    }
+    pub(crate) fn listener_at(&self, v: Rect, x: f32, y: f32) -> Option<Listener> {
         self.at(v, x, y)
             .find_map(|(h, x, y)| match h.kind {
                 HitKind::Port => None,
                 HitKind::Bars => self.scrolls[&h.key].track(x, y).map(|_| None),
-                _ => Some((h.id != 0).then(|| {
-                    (
-                        h.key,
-                        h.id,
-                        (f64::from(x) - f64::from(h.origin[0])) / f64::from(h.scale),
-                        (f64::from(y) - f64::from(h.origin[1])) / f64::from(h.scale),
-                    )
-                })),
+                _ => Some(h.actions.any().then(|| h.listener(x, y))),
             })
             .flatten()
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct Listener {
+    pub key: Attachment,
+    pub id: u64,
+    pub actions: Actions,
+    pub local: [f64; 2],
+}
+impl Hit {
+    fn listener(&self, x: f32, y: f32) -> Listener {
+        Listener {
+            key: self.key,
+            id: self.id,
+            actions: self.actions,
+            local: std::array::from_fn(|i| {
+                (f64::from([x, y][i]) - f64::from(self.origin[i])) / f64::from(self.scale)
+            }),
+        }
     }
 }
 
@@ -1267,6 +1308,7 @@ pub(crate) struct Scene {
     pub viewport: Rect,
     pub drawing: Arc<Drawing>,
     pub hits: Arc<Hits>,
+    pub navigation: Option<Navigation>,
 }
 impl Scene {
     pub(crate) fn packed_counts(&self) -> [usize; 3] {
@@ -1303,13 +1345,25 @@ impl Tree {
             self.root
                 .map(|k| (k, self.layers.parts[k].ports[side].revision))
         };
+        let focus_root = self
+            .root
+            .filter(|&k| self.elements.slots[k].stats.tab_stops != 0);
         if (stamp(0) != o.installed[0] && !o.draw.available())
             || (stamp(1) != o.installed[1] && !o.hits.available())
+            || (focus_root.is_some()
+                && o.navigation
+                    .as_ref()
+                    .is_some_and(|b| !b.available(&self.layers)))
         {
             o.cancel_fits();
             return false;
         }
         o.collect(&self.elements, self.root, &self.layers);
+        if !o.fits.waiting()
+            && let Some((k, bank)) = focus_root.zip(o.navigation.as_mut())
+        {
+            bank.prepare(&self.elements, &mut self.layers, k);
+        }
         true
     }
     pub(crate) fn seal(&mut self) -> Option<Scene> {
@@ -1320,8 +1374,24 @@ impl Tree {
         {
             return None;
         }
+        let navigation = if let Some(root) = self
+            .root
+            .filter(|&k| self.elements.slots[k].stats.tab_stops != 0)
+            && let Some(bank) = &mut o.navigation
+        {
+            // Detached refresh can also be sealed directly, without a live
+            // collect_if_available turn. Never change a pinned reader.
+            if !bank.available(&self.layers) {
+                return None;
+            }
+            bank.prepare(&self.elements, &mut self.layers, root);
+            Some(bank.snapshot())
+        } else {
+            None
+        };
         o.install();
         Some(Scene {
+            navigation,
             _workspace: self.workspace.clone(),
             viewport: self.layers.viewport,
             drawing: o.draw.current().clone(),

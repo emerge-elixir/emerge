@@ -38,6 +38,7 @@ impl Dependencies {
 }
 impl Subtree {
     pub fn with_layout(mut self, shape: Shape, a: &Attrs) -> Result<Self, String> {
+        self.tab_stops = self.child_stops + usize::from(a.actions.focusable());
         self.group_runs =
             self.child_group_runs + if a.opacity.is_some() { self.escapes } else { 0 };
         let kids = self.children;

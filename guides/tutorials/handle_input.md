@@ -48,6 +48,19 @@ when upgrading from 0.5.
 No raw input subscription is needed for element events. The window-level raw
 observers below keep their existing surface coordinates and message shapes.
 
+## Keyboard and touch scrolling
+
+On Wayland and binary headless, `Event.on_press/1` makes a control reachable by
+Tab and activatable by Enter. Focus and blur handlers also make a Tab stop;
+`on_click/1` alone does not. Tab and Shift+Tab follow declaration order and
+reveal offscreen controls through their enclosing scrollports. You do not need
+to listen for raw keys or rebuild the list to reveal a row.
+
+Plain arrows scroll one configured line. Page Up/Down scroll by the port size;
+Home/End go to an endpoint. A touch pan stays with the port that accepted it
+and can coast after release. A mouse pan or thumb drag stops at release. Neither
+pan delivers a click. Observe progress with `Event.on_scroll/1` as for a wheel.
+
 ## Swipe coordinates and duration
 
 `Event.on_swipe_up/1`, `on_swipe_down/1`, `on_swipe_left/1` and
@@ -150,9 +163,10 @@ Resize reports output dimensions and scale. Enter/focus refer to the **window**,
 not an individual UI element. IME preedit ranges come from the platform; surrounding
 text deletion counts UTF-8 bytes, not characters.
 
-On DRM, raw touch observers receive separate contact lifetimes; up/cancel carry
-the contact's last position. They do not receive primary-touch mouse emulation.
-Element interactions still use that emulation for ordinary controls and dragging.
+On Wayland and DRM, raw touch observers receive separate contact lifetimes;
+up/cancel carry the contact's last position. They do not receive synthetic
+mouse events. On Wayland the coordinates follow the last installed buffer,
+including when the output scale changes during a contact.
 
 ## DRM display wake
 

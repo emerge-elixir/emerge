@@ -4,6 +4,7 @@ mod changes;
 mod declaration;
 mod decoration;
 mod images;
+pub(crate) mod interaction;
 mod intrinsic;
 mod layers;
 mod nearby;
@@ -36,7 +37,7 @@ use layers::{Layers, Pass};
     any(feature = "opengl", feature = "vulkan")
 ))]
 pub(crate) use paint::GeometryPainter;
-pub(crate) use paint::{Attachment, Raster, Scene, ScrollHit};
+pub(crate) use paint::{Attachment, Listener, Navigation, Raster, Scene, ScrollHit, Stop};
 use pool::{Budget, Pool, Span};
 use slotmap::{SecondaryMap, SlotMap, new_key_type};
 use std::{cell::Cell, collections::HashMap, ops::Range};
@@ -365,7 +366,8 @@ struct Attrs {
     underline: Option<bool>,
     strike: Option<bool>,
     offset: [f64; 2],
-    click: bool,
+    actions: interaction::Actions,
+    autofocus: bool,
     // Relative to the pooled wire block. No retained String or second copy of UTF-8.
     text: Range<usize>,
     glyph_count: usize,
@@ -419,6 +421,8 @@ struct Subtree {
     escapes: usize,
     child_group_runs: usize,
     group_runs: usize,
+    child_stops: usize,
+    tab_stops: usize,
     // Cache the children's union separately: an attrs-only edit never needs
     // to reopen a kept order to prove its own layout dependencies.
     own: rotation::Dependencies,
@@ -436,6 +440,8 @@ impl Default for Subtree {
             escapes: 0,
             child_group_runs: 0,
             group_runs: 0,
+            child_stops: 0,
+            tab_stops: 0,
             own: Default::default(),
             children: Default::default(),
         }
@@ -451,6 +457,7 @@ impl Subtree {
             s.mounts += c.mounts + usize::from(slot.is_some());
             s.escapes += c.escapes + usize::from(slot.is_some_and(Slot::escapes));
             s.child_group_runs += c.group_runs;
+            s.child_stops += c.tab_stops;
             if slot.is_none() {
                 s.direct += 1;
                 s.children = s.children.union(c.own);

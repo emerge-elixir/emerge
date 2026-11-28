@@ -15,6 +15,7 @@ pub(super) use textures::Lease;
 mod handles;
 mod pointer;
 mod shm;
+mod touch;
 #[cfg(feature = "vulkan")]
 mod vulkan;
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -94,6 +95,9 @@ struct WindowApp {
     shm: Shm,
     pointer: Option<(wl_seat::WlSeat, pointer::Pointer)>,
     keyboard: Option<(wl_seat::WlSeat, wl_keyboard::WlKeyboard)>,
+    key_focus: bool,
+    loop_handle: sctk::reexports::calloop::LoopHandle<'static, WindowApp>,
+    touch: touch::Contacts,
     mods: u8,
     configured: bool,
     geometry: Geometry,
@@ -181,6 +185,9 @@ pub(super) fn run(
         shm,
         pointer: None,
         keyboard: None,
+        key_focus: false,
+        loop_handle: events.handle(),
+        touch: Default::default(),
         mods: 0,
         configured: false,
         geometry: Geometry {
@@ -223,6 +230,9 @@ pub(super) fn run(
             let until_report = app
                 .display
                 .report_due(owner)
+                .into_iter()
+                .chain(app.display.input_deadline(owner, &mut app.env))
+                .min()
                 .map(|at| at.saturating_duration_since(Instant::now()));
             events
                 .dispatch(wait.into_iter().chain(until_report).min(), &mut app)
@@ -380,16 +390,39 @@ impl WindowApp {
             }
             Some(started..handed)
         };
-        self.installed = Some(mapping);
-        self.display
-            .install(&self.owner, bundle, Pixels::Cpu(rgba), elapsed)?;
+        self.install_mapping(mapping);
+        self.display.install(
+            &self.owner,
+            &mut self.env,
+            bundle,
+            Pixels::Cpu(rgba),
+            elapsed,
+        )?;
         lock(&self.owner.pipe)?.submit_open = self.owner.opportunity(!self.frame_pending);
         Ok(None)
     }
     fn input(&mut self, event: InputEvent) {
+        self.input_at(event, Instant::now());
+    }
+    fn input_at(&mut self, event: InputEvent, at: Instant) {
         self.env
-            .run(|env| self.display.dispatch(&self.owner, env, event));
+            .run(|env| self.display.dispatch(&self.owner, env, event, at));
         self.env.clear();
+    }
+    // Only a submitted buffer changes the coordinate system. A stationary
+    // contact must not turn into a pan (or acquire velocity) on wl_touch.up.
+    fn install_mapping(&mut self, next: Mapping) {
+        if let Some(old) = self.installed.replace(next)
+            && old != next
+        {
+            let (from, to) = (old.ratios(), next.ratios());
+            if from != to {
+                self.display.input.remap(
+                    |p| std::array::from_fn(|i| (f64::from(p[i]) * (to[i] / from[i])) as f32),
+                    |id| self.touch.position(id, next),
+                );
+            }
+        }
     }
     fn output_interval(&mut self, o: &wl_output::WlOutput) {
         if let Some(mode) = self

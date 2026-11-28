@@ -114,7 +114,7 @@ impl Reach {
             let pad = (4. * scale::pixels(a.decor.max_shadow, ctx.scale) + 2.) * pixel.max(1.);
             frame.union(Extent::checked(raw.with_outset((pad, pad))))
         };
-        let hit = if a.click
+        let hit = if a.actions.any()
             || shape == Shape::Paragraph
             || ctx.bars
             || e.slots[k].slot.is_some_and(Slot::escapes)

@@ -33,6 +33,7 @@ impl Order {
 pub(super) struct Record {
     pub _grant: storage::Grant,
     pub id: u64,
+    pub autofocus_mount: u64,
     pub shape: Shape,
     pub parent: Option<Key>,
     pub slot: Option<Slot>,

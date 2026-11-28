@@ -28,6 +28,25 @@ defmodule Emerge.UI.Scroll do
   Style the container normally with helpers such as `Background.color/1`,
   `Border.rounded/1`, `padding/1`, and `spacing/1`.
 
+  ## Keyboard and touch
+
+  On retained Wayland and binary headless output, Tab and Shift+Tab move
+  between controls declaring `on_focus`, `on_blur` or `on_press`. Click-only
+  elements aren't tab stops. Focusing an offscreen control reveals it through
+  its enclosing scrollports, innermost first. Enter activates a focused
+  `on_press` handler without adding a payload.
+
+  Plain arrows scroll one `scroll_line_pixels` step. Page Up/Down move by a
+  viewport and Home/End move to an endpoint (vertical first, horizontal if
+  there is no vertical range). These keys use the focused control's enclosing
+  ports or the port under the pointer. With neither focus nor pointer, they
+  use installed port order. Key releases and modified shortcuts do not scroll.
+
+  A tap can activate a control. A pan stays with the port that accepted the
+  movement; it does not click on release. A fast direct-touch pan can coast
+  after release, unlike a mouse pan or a scrollbar drag. No raw input
+  subscription is needed for these controls.
+
   ## Controlled scrolling
 
   Bind `scroll_y(state.y)` (or `scroll_x(state.x)`) and

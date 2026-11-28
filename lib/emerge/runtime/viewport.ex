@@ -588,6 +588,12 @@ defmodule Emerge.Runtime.Viewport do
     end
   end
 
+  defp handle_renderer_message({:emerge_skia_routed, epoch, {id, type}}, state) do
+    routes = Map.get(runtime!(state).route_epochs, epoch, %{})
+    route_element_event(state, id, type, :no_payload, routes)
+    {:noreply, note_renderer_heartbeat(state)}
+  end
+
   defp handle_renderer_message({:emerge_skia_routed, epoch, {id, type, payload}}, state) do
     routes = Map.get(runtime!(state).route_epochs, epoch, %{})
     route_element_event(state, id, type, {:with_payload, payload}, routes)

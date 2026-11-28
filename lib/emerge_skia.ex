@@ -672,11 +672,14 @@ defmodule EmergeSkia do
   @doc """
   Sends raw input to a binary headless renderer, in backend surface coordinates.
 
-  Use the same pointer, key, text-commit or focus event shapes as `Emerge.Input`.
-  For example, send `{:pointer_button, {:left, :press, [], {5, 45}}}` followed
-  by a release. The dispatcher resolves the target against the last installed
-  output, even when a newer tree has been accepted or drawn. Raw subscriptions do not enable or disable element listeners. In a
-  viewport, obtain the renderer with `Emerge.renderer/1`.
+  Use the pointer, touch, key, text-commit or focus event shapes from `Emerge.Input`.
+  For example, send `{:touch, {1, :down, {5, 45}}}` followed by
+  `{:touch, {1, :up, {5, 45}}}`. Keep the contact ID until `:up` or `:cancel`.
+
+  The dispatcher resolves the target against the last installed output, even
+  when a newer tree has been accepted or drawn. Raw subscriptions do not enable
+  or disable element listeners. In a viewport, obtain the renderer with
+  `Emerge.renderer/1`.
   """
   @spec send_input(renderer(), Emerge.Input.event()) :: :ok | {:error, term()}
   def send_input(renderer, event) when is_reference(renderer),
@@ -709,11 +712,12 @@ defmodule EmergeSkia do
   - `{:cursor_entered, entered}`
   - `{:resized, {width, height, scale}}`
   - `{:focused, focused}`
-  - `{:touch, {contact_id, :down | :move | :up | :cancel, {x, y}}}` (DRM touchscreens)
+  - `{:touch, {contact_id, :down | :move | :up | :cancel, {x, y}}}`
 
   Raw pointer/touch positions use backend surface coordinates, not element-local
-  logical pixels. Touch observers receive contacts independently of primary-touch
-  mouse emulation used for element interactions.
+  logical pixels. On Wayland these are mapped to the installed buffer. Raw touch
+  observers see contacts, not synthetic mouse events; only the primary gesture
+  can activate, drag, swipe or pan.
 
   On Wayland, close notifications are sent separately as:
 
