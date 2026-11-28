@@ -111,13 +111,21 @@ impl Elements {
     }
 }
 impl Layers {
-    pub fn invalidate_changes(&mut self, e: &mut Elements, root: Option<Key>) {
+    pub fn invalidate_changes(
+        &mut self,
+        e: &mut Elements,
+        root: Option<Key>,
+        out: &mut paint::Output,
+    ) {
         self.begin_measure_inputs(e, root);
         #[cfg(test)]
         if !e.touched.is_empty() {
             self.invalidation_passes += 1;
         }
         while let Some(k) = e.touched.pop() {
+            if e.attrs[k].material() {
+                out.prepare_material(k);
+            }
             let depth = e.depth(k);
             let m = &mut e.slots[k];
             debug_assert!(m.detached.is_none());
@@ -348,6 +356,8 @@ impl Layers {
             || (next.scroll.port() && old.sizing.padding != next.sizing.padding)
         {
             if old.scroll.enabled != next.scroll.enabled {
+                self.scroll.forget_order(e, k);
+                self.invalidate_composition(k, depth, Outputs::Both);
                 self.enqueue(Pass::Place, k, e);
             }
             if !next.scroll.tracked() {

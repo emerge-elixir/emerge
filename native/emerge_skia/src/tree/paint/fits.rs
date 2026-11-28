@@ -22,6 +22,8 @@ pub(in crate::tree) struct Fits {
     epoch: u64,
     cursor: usize,
     missing: usize,
+    #[cfg(test)]
+    pub(super) additions: usize,
 }
 impl Fits {
     pub(in crate::tree) fn advance_from(&mut self, old: &Self) {
@@ -51,14 +53,21 @@ impl Fits {
         !self.entries.is_empty()
     }
     pub(super) fn reset(&mut self) {
-        self.index.clear();
-        self.entries.clear();
+        // The index has room for every admitted image. Reset the previous
+        // visible requests, not a hash table sized for the whole document.
+        for entry in self.entries.drain(..) {
+            self.index.remove(&entry.record.id());
+        }
         self.users.clear();
         self.cursor = 0;
         self.missing = 0;
         self.epoch += 1;
     }
     pub(super) fn add(&mut self, k: Key, r: &Record, size: ISize) {
+        #[cfg(test)]
+        {
+            self.additions += 1;
+        }
         self.users.push((r.id(), k));
         let i = *self.index.entry(r.id()).or_insert_with(|| {
             self.entries.push(Entry {

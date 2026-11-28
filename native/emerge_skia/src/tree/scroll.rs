@@ -1,10 +1,12 @@
 //! Layout boxes stay unscrolled. A port projects its live fraction onto the
 //! latest range; the display gets only an immutable receipt and geometry.
 use super::*;
+mod visibility;
 use std::{
     collections::VecDeque,
     time::{Duration, Instant},
 };
+pub(super) use visibility::{Facts, Query, Reach, order_port};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Proposal {
@@ -117,6 +119,7 @@ impl Update {
 }
 #[derive(Default)]
 struct State {
+    visible_children: visibility::Window,
     view: View,
     spec: Spec,
     read_range: bool,
@@ -125,16 +128,30 @@ struct State {
 #[derive(Default)]
 pub(super) struct Ports {
     states: HashMap<Key, State>,
+    entries: SecondaryMap<Key, visibility::Entry>,
+    #[cfg(test)]
+    pub exhaustive: bool,
+    #[cfg(test)]
+    pub counts: visibility::Counts,
     serial: u64,
 }
 impl Ports {
-    pub fn reserve(&mut self, n: usize) -> Result<(), String> {
+    pub fn reserve(&mut self, n: usize, keys: usize) -> Result<(), String> {
+        if n != 0 {
+            self.entries
+                .try_set_capacity(keys)
+                .map_err(pool::capacity_error)?;
+        }
         self.states
             .try_reserve(n.saturating_sub(self.states.len()))
             .map_err(pool::capacity_error)
     }
     pub fn remove(&mut self, k: Key) {
         self.states.remove(&k);
+    }
+    pub fn evict(&mut self, k: Key) {
+        self.remove(k);
+        self.entries.remove(k);
     }
     pub fn inherit(&mut self, old: &mut Self, version: &declaration::Records) {
         self.serial = old.serial;
@@ -148,6 +165,7 @@ impl Ports {
                 })
                 .map(|(k, mut s)| {
                     s.read_range = true;
+                    s.visible_children = Default::default();
                     (k, s)
                 }),
         );
@@ -177,6 +195,10 @@ impl Ports {
         if std::mem::take(&mut state.read_range) || state.spec.enabled != spec.enabled {
             // Only the changed scrollport reads its direct children. A nested
             // viewport contributes its box rather than its own overflow.
+            #[cfg(test)]
+            {
+                self.counts.range_reads += e.children(k).len();
+            }
             state.view.range =
                 e.children(k)
                     .iter()

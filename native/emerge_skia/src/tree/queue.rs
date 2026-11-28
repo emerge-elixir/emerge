@@ -63,6 +63,12 @@ impl<T: Copy + std::ops::BitOrAssign> WorkSet<T> {
         while self.pop(Direction::ShallowFirst).is_some() {}
     }
 
+    /// Make this real key addressable without putting a job on the queue.
+    /// Reserving SecondaryMap capacity alone leaves vacant slots uninitialized.
+    pub fn prepare_slot(&mut self, k: Key) {
+        let _ = self.queued.entry(k);
+    }
+
     pub fn push(&mut self, depth: usize, k: Key, value: T) {
         let empty = self.queued.is_empty();
         let Some(slot) = self.queued.entry(k) else {

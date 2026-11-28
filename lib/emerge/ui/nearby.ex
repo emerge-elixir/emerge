@@ -42,9 +42,11 @@ defmodule Emerge.UI.Nearby do
 
   ## Clipping
 
-  Nearby escape content is not clipped by ancestor hosts by default. Add
-  `Emerge.UI.clip_nearby/0` on a host or scroll container when you want that
-  host to clip nearby escapes too.
+  A menu can extend past its host. If the host is in scrolling content, the
+  menu moves with it and stops at the scroll container's inner edge, for both
+  drawing and clicks. Mount a panel directly on the container to keep it in
+  place and let it extend past that edge. `Emerge.UI.clip_nearby/0` on a host
+  clips its own escaping panels as well as those below it.
 
   ## Paint Order
 

@@ -114,9 +114,10 @@ See [Handle input](handle_input.md) and `Emerge.UI.Event` for pointer interactio
 
 To attach a menu to a phrase in a paragraph, put `Nearby.below(menu)` on the `el` that wraps the text. The menu appears once below the whole phrase, even if the phrase spans several lines. Give the menu `width(fill())` to match that wrapped phrase's width, not the width of the paragraph.
 
-A dropdown attached to a scrolling row moves with the row and can overlap the
-content outside the scroll container. Add `clip_nearby()` to the container to
-keep the dropdown's drawing and pointer hits inside it.
+A dropdown attached to a scrolling row can extend past the row, but its drawing
+and pointer hits stop at the scroll container. To keep a panel stationary, attach
+it directly to the container. That panel can extend outside the container unless
+you also give the container `clip_nearby()`.
 
 Here is a dropdown attached to a toolbar button:
 

@@ -13,7 +13,7 @@ pub(super) struct Plane {
     parent: u32,
 }
 impl Pose {
-    fn matrix(self, frame: Rect) -> Matrix {
+    pub(in crate::tree) fn matrix(self, frame: Rect) -> Matrix {
         let center = sk(frame).center();
         let mut m = Matrix::rotate_deg_pivot(self.degrees, center);
         if self.zoom != 1. {
@@ -171,9 +171,47 @@ impl Coords {
         canvas.set_matrix(&matrix);
     }
 }
+// An ordinary shadow drops box clips, but not the active axes of an enclosing
+// port. Each strip stays in its establishing plane, even under a descendant pose.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) struct ShadowGuard {
+    pub parent: u32,
+    pub plane: u32,
+    pub inner: Rounded,
+    pub axes: [bool; 2],
+}
+impl ShadowGuard {
+    pub fn apply(mut link: u32, draw: &Drawing, canvas: &Canvas) {
+        if link == 0 {
+            return;
+        }
+        let base = canvas.local_to_device();
+        while link != 0 {
+            let guard = draw.shadow_guards[link as usize - 1];
+            if let Some(p) = draw.planes.get(guard.plane) {
+                canvas.concat(&p.matrix);
+            }
+            if guard.axes == [true, true] {
+                guard.inner.apply(canvas, (0., 0.));
+            } else if let Some(mut strip) = canvas.local_clip_bounds() {
+                let r = sk(guard.inner.rect);
+                if guard.axes[0] {
+                    (strip.left, strip.right) = (r.left, r.right);
+                }
+                if guard.axes[1] {
+                    (strip.top, strip.bottom) = (r.top, r.bottom);
+                }
+                canvas.clip_rect(strip, None, false);
+            }
+            canvas.set_matrix(&base);
+            link = guard.parent;
+        }
+    }
+}
 #[derive(Default, Clone, Copy, Debug, PartialEq)]
 pub(super) struct Scope {
-    pub guard: Coords, // shadows may drop ordinary clips, never an explicit escape clip
+    pub shadow: u32,
+    pub guard: Coords, // outer shadows on an escaped branch keep its whole guard
     pub mask: Mask,
     pub plane: u32,
     // A rounded inline continuation belongs to the wrapper, immediately

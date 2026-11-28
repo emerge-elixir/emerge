@@ -362,7 +362,8 @@ impl Tree {
             self.elements.slots.capacity(),
             self.budget.capacity(tree.mounts),
         )?;
-        self.layers.scroll.reserve(d.scrolls)?;
+        self.layers
+            .reserve_projection(d.scrolls, self.elements.slots.capacity())?;
         self.output
             .reserve_scrolls(d.scrolls, d.live, words, self.budget)?;
         self.output.fits.reserve(d.images, self.budget)?;

@@ -51,13 +51,21 @@ pub(super) struct Paragraphs {
     pub words: usize,
     solutions: SecondaryMap<Key, Solution>,
     data: Pool<Fragment>,
-    sites: SecondaryMap<Key, Rect>,
+    sites: SecondaryMap<Key, Site>,
     scratch: Vec<Fragment>,
     pub floats: Floats,
     #[cfg(test)]
     pub solves: usize,
     #[cfg(test)]
     pub frame: u64,
+}
+// An inline declaration owns a consecutive slice of the paragraph's words.
+// Keep the slice with its settled site; selecting late spans must not walk
+// earlier declarations or their words. Floats and empty owners have no words.
+#[derive(Default)]
+struct Site {
+    frame: Rect,
+    words: std::ops::Range<u32>,
 }
 #[derive(Clone, Copy, Default)]
 struct Solution {
@@ -101,10 +109,19 @@ impl Paragraphs {
         self.sites.remove(k);
     }
     pub fn set_site(&mut self, c: Key, site: Rect) {
-        self.sites.insert(c, site);
+        self.sites.insert(
+            c,
+            Site {
+                frame: site,
+                ..Site::default()
+            },
+        );
     }
     pub fn site(&self, c: Key) -> Rect {
-        self.sites.get(c).copied().unwrap_or_default()
+        self.sites.get(c).map_or(Rect::default(), |s| s.frame)
+    }
+    pub fn words_at(&self, owner: Key) -> std::ops::Range<u32> {
+        self.sites[owner].words.clone()
     }
     pub fn fragments(&self, k: Key) -> &[Fragment] {
         self.solutions
@@ -177,14 +194,20 @@ impl Paragraphs {
         for &owner in e.children(k) {
             if let Some(side) = e.float_side(owner) {
                 let rect = flow.add_float(side, float_size(owner));
-                self.sites.insert(owner, rect);
+                self.sites.insert(
+                    owner,
+                    Site {
+                        frame: rect,
+                        ..Site::default()
+                    },
+                );
                 continue;
             }
-            self.sites.insert(owner, Rect::default());
+            self.sites.insert(owner, Site::default());
             let Some(source) = e.span_source(owner) else {
                 continue;
             };
-            self.sites.insert(source, Rect::default());
+            self.sites.insert(source, Site::default());
             let phrase = Phrase {
                 s: e.text(source),
                 source,
@@ -202,14 +225,17 @@ impl Paragraphs {
         let height = flow.bottom - top;
         // Store unturned frames for the same pivots used in drawing and hits.
         // Alignment has already shifted each fragment into its final line.
+        let mut first = 0;
         for span in self.scratch.chunk_by(|a, b| a.owner == b.owner) {
             let (owner, source) = (span[0].owner, span[0].source);
             let ink = span.iter().map(|f| f.bounds).reduce(union).unwrap();
-            self.sites.insert(source, ink);
+            self.sites[source].frame = ink;
             if source != owner {
-                self.sites
-                    .insert(owner, turn::owner_box(e, owner, source, ink));
+                self.sites[owner].frame = turn::owner_box(e, owner, source, ink);
             }
+            let end = first + span.len() as u32;
+            self.sites[owner].words = first..end;
+            first = end;
         }
         let changed = self.fragments(k) != self.scratch;
         let solution = self

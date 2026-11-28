@@ -50,6 +50,7 @@ struct Strike {
     scale: f32,
     widths: Vec<f32>,
     bounds: Vec<skia_safe::Rect>,
+    inline_overhang: f32,
     ascent: f32,
     descent: f32,
 }
@@ -84,6 +85,15 @@ impl Strike {
         bounds.resize(count, skia_safe::Rect::default());
         font.get_widths_bounds(&ids, Some(&mut widths), Some(&mut bounds), None);
         let (_, m) = font.metrics();
+        // Wrapped words start at their own baseline, not the full run's pen.
+        // Bound their bearings against any line box without rescanning glyphs
+        // during composition, scrolling or a same-size text replacement.
+        let inline_overhang = bounds.iter().zip(&widths).fold(0f32, |pad, (r, advance)| {
+            pad.max(-r.left)
+                .max(r.right - advance)
+                .max(m.ascent - r.top)
+                .max(r.bottom - m.descent)
+        }) * scale;
         face.cmap();
         Ok(Self {
             face,
@@ -91,6 +101,7 @@ impl Strike {
             scale,
             widths,
             bounds,
+            inline_overhang,
             ascent: m.ascent * scale,
             descent: m.descent * scale,
         })
@@ -248,6 +259,9 @@ impl TextStore {
     fn strike(&self, run: Run) -> &Strike {
         self.strikes
             .get(StrikeKey::new(run.metrics.face, run.metrics.size))
+    }
+    pub fn inline_overhang(&self, run: Run) -> f32 {
+        self.strike(run).inline_overhang
     }
     pub fn space_width(&self, run: Run) -> f32 {
         let s = self.strike(run);

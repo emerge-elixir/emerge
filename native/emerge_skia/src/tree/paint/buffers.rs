@@ -108,8 +108,8 @@ impl<T: Packed<N>, const N: usize> Buffers<T, N> {
     }
 }
 
-impl Packed<7> for super::Drawing {
-    fn capacities(&self) -> [usize; 7] {
+impl Packed<8> for super::Drawing {
+    fn capacities(&self) -> [usize; 8] {
         let [styles, bytes] = self.materials.capacities();
         [
             self.commands.capacity(),
@@ -119,12 +119,14 @@ impl Packed<7> for super::Drawing {
             styles,
             bytes,
             self.planes.0.capacity(),
+            self.shadow_guards.capacity(),
         ]
     }
     fn reserve(
         &mut self,
-        [commands, ids, pos, clips, styles, bytes, planes]: [usize; 7],
+        [commands, ids, pos, clips, styles, bytes, planes, guards]: [usize; 8],
     ) -> Result<(), String> {
+        pool::reserve(&mut self.shadow_guards, guards)?;
         pool::reserve(&mut self.planes.0, planes)?;
         pool::reserve(&mut self.commands, commands)?;
         pool::reserve(&mut self.ids, ids)?;
@@ -154,8 +156,16 @@ impl Packed<4> for super::Hits {
         self.clips.reserve(clips, Budget(0))
     }
     fn clear(&mut self) {
+        // HashMap::clear can touch the capacity of every admitted port,
+        // even if the old sealed stream contained just one wheel region.
+        if self.scrolls.capacity() <= self.items.len() {
+            self.scrolls.clear();
+        } else if !self.scrolls.is_empty() {
+            for h in self.items.iter().filter(|h| h.kind == super::HitKind::Port) {
+                self.scrolls.remove(&h.key);
+            }
+        }
         self.items.clear();
-        self.scrolls.clear();
         self.clips.clear();
         self.planes.0.clear();
     }

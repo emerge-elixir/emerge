@@ -91,36 +91,29 @@ impl Output {
         scope: Scope,
         branch: Branch,
     ) -> bool {
-        let children = e.children(k);
-        let park = l.parts[k].ports[side].exports
-            && children
-                .iter()
-                .any(|&c| e.float_side(c).is_none() && l.parts[c].ports[side].exports);
-        let words = l.paragraphs.fragments(k);
-        let mut end = words.len();
-        for &owner in children.iter().rev() {
+        let park = l.parts[k].ports[side].exports;
+        for &owner in l.scroll.children_rev(e, k) {
+            #[cfg(test)]
+            {
+                self.packed_children[side] += 1;
+            }
             if e.float_side(owner).is_some() {
                 if park && l.parts[owner].ports[side].exports {
                     self.stack
                         .push((owner, Visit::ReleaseFloat(bands::Chain::default()), scope));
                 }
             } else {
-                let mut first = end;
-                while first > 0 && words[first - 1].owner == owner {
-                    first -= 1;
-                }
-                if first != end || !e.order(owner).tags.is_empty() {
+                let words = l.paragraphs.words_at(owner);
+                if !words.is_empty() || !e.order(owner).tags.is_empty() {
                     let span = Span {
                         paragraph: k,
-                        first: first as u32,
-                        end: end as u32,
+                        first: words.start,
+                        end: words.end,
                     };
                     self.stack.push((owner, Visit::Inline(span, branch), scope));
                 }
-                end = first;
             }
         }
-        debug_assert_eq!(end, 0);
         park
     }
     pub(super) fn inline_owner(
@@ -136,7 +129,7 @@ impl Output {
         if side == 0 && a.opacity == Some(0) {
             return;
         }
-        let ctx = l.paint[owner];
+        let ctx = l.painted(owner);
         let (planes, clips) = if side == 0 {
             (&mut self.draw.build.planes, &mut self.draw.build.clips)
         } else {
@@ -219,8 +212,8 @@ impl Output {
         let span = &l.paragraphs.fragments(k)[range.first as usize..range.end as usize];
         let Some(first) = span.first() else { return };
         let source = first.source;
-        let ctx = l.paint[k];
-        let owner_ctx = l.paint[owner];
+        let ctx = l.painted(k);
+        let owner_ctx = l.painted(owner);
         let outer = Space {
             plane: scope.plane,
             clip: owner_ctx.clip,
@@ -243,7 +236,7 @@ impl Output {
                 planes,
                 scope.mask,
                 &e.attrs[source],
-                l.paint[source],
+                l.painted(source),
                 ctx,
                 side == 1,
             )
@@ -253,12 +246,12 @@ impl Output {
         // slot in the El's axes, not in the axes of the Text's glyphs.
         let owner_rect = |r| {
             if source != owner && e.attrs[source].rotation.mixes_axes() {
-                l.paint[owner].frame
+                owner_ctx.frame
             } else {
                 outer.rect(r)
             }
         };
-        let corners = e.attrs[owner].decor.radii(l.paint[owner].scale);
+        let corners = e.attrs[owner].decor.radii(owner_ctx.scale);
         if side == 1 {
             let hits = &mut self.hits.build;
             if !((part != Part::Content && e.attrs[owner].click)
@@ -282,7 +275,7 @@ impl Output {
                         space.rect(local)
                     };
                     if let Some(area) = rect.intersection(space.clip) {
-                        let frame = l.paint[target].frame;
+                        let frame = l.painted(target).frame;
                         hits.items.push(Hit {
                             kind: HitKind::Listener,
                             wheel,
@@ -291,7 +284,7 @@ impl Output {
                             id: e.slots[target].id,
                             rect: area,
                             origin: [frame.x, frame.y],
-                            scale: l.paint[target].scale,
+                            scale: l.painted(target).scale,
                         });
                     }
                 }
@@ -329,7 +322,7 @@ impl Output {
             }
             return;
         }
-        let source_ctx = l.paint[source];
+        let source_ctx = l.painted(source);
         let [t, r, b, left] = e.attrs[k]
             .sizing
             .padding

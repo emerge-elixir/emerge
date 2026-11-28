@@ -104,7 +104,7 @@ impl Capacity {
         // secondary-map slots, glyph overlap and paragraph/clip scratch.
         // Keep the credit pinned with any sealed readers after a growth.
         let units = [
-            4096 + 32 * usize::from(mounts != 0),
+            4096 + 32 * usize::from(mounts != 0) + 640 * usize::from(scrolls != 0),
             4096,
             160,
             8192,
@@ -145,7 +145,7 @@ impl Capacity {
             groups + 3 * mounts + scrolls,
             Budget(0),
         )?;
-        t.layers.scroll.reserve(scrolls)?;
+        t.layers.reserve_projection(scrolls, keys)?;
         t.output
             .reserve_scrolls(scrolls, owners, words, Budget(0))?;
         t.output.reserve_bands(escapes, groups, Budget(0))?;

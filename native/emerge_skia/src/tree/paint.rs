@@ -5,8 +5,9 @@ use bands::{Bands, Branch, Groups};
 pub(crate) use scrollbars::ScrollHit;
 mod buffers;
 mod clips;
+mod coverage;
 pub(super) mod fits;
-use buffers::Buffers;
+use buffers::{Buffers, Packed};
 use std::sync::Arc;
 mod image;
 mod inline;
@@ -24,14 +25,16 @@ use skia_safe::{
     SurfacePropsFlags, surfaces,
 };
 use styled::{Brush, MaterialIndex, Materials, Phase};
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Default, PartialEq)]
 pub(super) struct PaintContext {
+    pub content: Option<Key>, // nearest ordinary scroll edge; retained facts are unscrolled
     pub frame: Rect,
     pub boundary: Rect, // incoming clip, before this node's pose
     pub clip: Rect,
     pub child_clip: Rect,
     pub escape_boundary: Rect,
     pub escape_clip: Rect,
+    pub content_escape: Rect, // ordinary children inherit the stationary port guard
     pub content_scroll: [f32; 2],
     pub scrollport: bool,
     pub bars: bool,
@@ -221,6 +224,7 @@ impl OwnPaint {
 }
 #[derive(Clone, Copy, Default)]
 pub(super) struct Composition {
+    reach: scroll::Reach,
     paint: OwnPaint,
     art: bool,
     hit: Option<Hit>,
@@ -230,7 +234,64 @@ pub(super) struct Composition {
     opacity: Option<u8>,
     ports: [Port; 2],
 }
+#[derive(Clone, Copy)]
+pub(super) struct Projected {
+    pub ctx: PaintContext,
+    paint: OwnPaint,
+    hit: Option<Hit>,
+}
+impl Projected {
+    pub fn new(e: &Elements, k: Key, ctx: PaintContext, run: Option<&Run>) -> Self {
+        Self {
+            paint: e.slots[k].shape.paint(e, k, &ctx, run),
+            hit: ctx.hit(e, k),
+            ctx,
+        }
+    }
+}
+impl PaintContext {
+    fn hit(self, e: &Elements, k: Key) -> Option<Hit> {
+        let a = &e.attrs[k];
+        let escapes = e.slots[k].slot.is_some_and(Slot::escapes);
+        if !a.click && !escapes {
+            return None;
+        }
+        let clip = if a.posed() && e.slots[k].shape == Shape::Image {
+            self.child_clip
+        } else {
+            self.clip
+        };
+        Some(Hit {
+            kind: if escapes {
+                HitKind::Escape
+            } else {
+                HitKind::Listener
+            },
+            wheel: 0,
+            scope: Scope::default(),
+            key: Attachment(k, e.slots[k].attachment),
+            id: if a.click { e.slots[k].id } else { 0 },
+            rect: self.frame.intersection(clip)?,
+            origin: [self.frame.x, self.frame.y],
+            scale: self.scale,
+        })
+    }
+}
 impl Composition {
+    pub(super) fn facts(self) -> scroll::Facts {
+        scroll::Facts {
+            reach: self.reach,
+            active: self.ports.map(|p| p.nonempty),
+            exports: self.ports.map(|p| p.exports),
+        }
+    }
+    fn at(mut self, projected: Option<&Projected>) -> Self {
+        if let Some(p) = projected {
+            self.paint = p.paint;
+            self.hit = p.hit;
+        }
+        self
+    }
     /// Reordering two hit-only panels cannot dirty the drawing (or vice versa).
     /// An evicted generation can have contributed to the old stream; a cold
     /// attachment has not composed yet. Treat either as potentially visible.
@@ -266,15 +327,13 @@ impl Composition {
 // Each child has one parent. Comparing (ordinal among nonempty children, value
 // revision) and the count is exact for its ordered contribution, without a
 // second child list. Children that changed to empty need no comparison by ID.
-pub(super) fn compose(
-    e: &Elements,
-    k: Key,
-    ctx: &PaintContext,
-    run: Option<&Run>,
-    parts: &mut SecondaryMap<Key, Composition>,
-    requested: Outputs,
-) -> Option<Outputs> {
-    let mut next = parts.get(k).copied().unwrap_or_default();
+pub(super) fn compose(l: &mut Layers, e: &Elements, k: Key, requested: Outputs) -> Option<Outputs> {
+    let ctx = &l.paint[k];
+    let run = l.runs.get(k);
+    let parts = &mut l.parts;
+    let indexed = l.scroll.facts(e, k, parts);
+    let old = parts.get(k).copied().unwrap_or_default();
+    let mut next = old;
     let mut delta = [false; 2];
     let a = &e.attrs[k];
     for (side, changed) in delta.iter_mut().enumerate() {
@@ -282,42 +341,30 @@ pub(super) fn compose(
             continue;
         }
         let own = if side == 0 {
-            let paint = e.slots[k].shape.paint(e, k, ctx, run);
+            // Don't snap the unscrolled box to today's pixel phase. A thin
+            // fill (or glyph just outside its own box) can become paintable
+            // after a fractional scroll. Exact clipping belongs to Project.
+            let stable = PaintContext {
+                transformed: ctx.transformed || ctx.content.is_some(),
+                ..*ctx
+            };
+            let paint = e.slots[k].shape.paint(e, k, &stable, run);
+            let unprojected = ctx.content.is_some()
+                && (run.is_some()
+                    || (paint.fill.is_none() && a.background.is_some_and(|v| v & 255 != 0)));
             let image = a.has_art();
             *changed = next.paint != paint
                 || paint.decorated
                 || image
                 || next.art
-                || next.opacity != a.opacity;
+                || next.opacity != a.opacity
+                || unprojected;
             next.art = image;
             next.opacity = a.opacity;
             next.paint = paint;
-            image || paint.nonempty()
+            image || unprojected || paint.nonempty()
         } else {
-            let hit = ctx
-                .frame
-                .intersection(if a.posed() && e.slots[k].shape == Shape::Image {
-                    ctx.child_clip
-                } else {
-                    ctx.clip
-                })
-                .filter(|_| a.click || e.slots[k].slot.is_some_and(Slot::escapes))
-                .map(|rect| Hit {
-                    kind: if e.slots[k].slot.is_some_and(Slot::escapes) {
-                        HitKind::Escape
-                    } else {
-                        HitKind::Listener
-                    },
-                    wheel: 0, // linked to its enclosing scroll region when packed
-                    scope: Scope::default(),
-                    key: Attachment(k, e.slots[k].attachment),
-                    // Zero is not a wire ID: an escaping root with no listener
-                    // stops lookup at exactly the region its listener would use.
-                    id: if a.click { e.slots[k].id } else { 0 },
-                    rect,
-                    origin: [ctx.frame.x, ctx.frame.y],
-                    scale: ctx.scale,
-                });
+            let hit = ctx.hit(e, k);
             let rounded = a.decor.radius != [0.; 4];
             *changed = hit != next.hit
                 || rounded
@@ -325,7 +372,11 @@ pub(super) fn compose(
                 || (a.click && e.slots[k].shape == Shape::Image);
             next.rounded = rounded;
             next.hit = hit;
-            hit.is_some()
+            let unprojected = ctx.content.is_some()
+                && hit.is_none()
+                && (a.click || e.slots[k].slot.is_some_and(Slot::escapes));
+            *changed |= unprojected;
+            hit.is_some() || unprojected
         };
         *changed |= ctx.bars || next.bars[side];
         next.bars[side] = ctx.bars;
@@ -339,7 +390,28 @@ pub(super) fn compose(
         let mut counts = [0usize; 3];
         let mut exports = false;
         let mut boundary = false;
-        for (role, c) in e.order(k).owned() {
+        if let Some(facts) = indexed {
+            // A changed child already sent its precise side up the workset. The
+            // range root summarizes ordinary contributors, including hidden ones.
+            counts[0] = usize::from(facts.active[side]);
+            exports = facts.exports[side];
+            *changed = true;
+        }
+        let order = e.order(k);
+        let ordinary = if indexed.is_some() {
+            &[]
+        } else {
+            order.children()
+        };
+        #[cfg(test)]
+        {
+            l.scroll.counts.compose_reads[side] += ordinary.len();
+        }
+        for (role, c) in ordinary
+            .iter()
+            .map(|&c| (None, c))
+            .chain(order.nearby().map(|(s, c)| (Some(s), c)))
+        {
             let escapes = role.is_some_and(Slot::escapes);
             boundary |= escapes;
             let port = &mut parts[c].ports[side];
@@ -370,12 +442,42 @@ pub(super) fn compose(
         port.exports = exports;
         port.boundary = boundary;
         port.children = count;
-        port.nonempty = inline || own || count != 0;
+        let nonempty = inline || own || count != 0;
+        *changed |= port.nonempty != nonempty;
+        port.nonempty = nonempty;
         if *changed {
             port.revision += 1
         }
     }
+    if ctx.content.is_some() {
+        let ordinary = indexed.map_or_else(
+            || {
+                e.children(k)
+                    .iter()
+                    .map(|&c| parts[c].reach)
+                    .fold(scroll::Reach::default(), scroll::Reach::union)
+            },
+            |s| s.reach,
+        );
+        let mounts = e
+            .nearby(k)
+            .map(|(_, c)| parts[c].reach)
+            .fold(scroll::Reach::default(), scroll::Reach::union);
+        let overhang = run
+            .filter(|_| e.inline_host(k).is_some())
+            .map_or(0., |&run| l.text.inline_overhang(run));
+        next.reach = scroll::Reach::compose(e, k, *ctx, overhang, ordinary, mounts);
+        for (side, changed) in delta.iter_mut().enumerate() {
+            if !*changed && next.reach.side_changed(old.reach, side) {
+                next.ports[side].revision += 1;
+                *changed = true;
+            }
+        }
+    }
     parts.insert(k, next);
+    if ctx.content.is_some() {
+        l.scroll.refit(e, k, parts, old.facts(), next.facts());
+    }
     Outputs::changed(delta[0], delta[1])
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -424,6 +526,7 @@ pub(crate) struct Drawing {
     commands: Vec<(Scope, Command)>,
     clips: Clips,
     planes: Planes,
+    shadow_guards: Vec<pose::ShadowGuard>,
     scope: Scope,
     ids: Vec<u16>,
     positions: Vec<Point>,
@@ -457,6 +560,7 @@ impl Drawing {
         self.materials.clear();
         self.clips.clear();
         self.planes.0.clear();
+        self.shadow_guards.clear();
         self.scope = Scope::default();
         self.commands.clear();
         self.ids.clear();
@@ -479,13 +583,15 @@ pub(super) struct Output {
     ancestry: Groups,
     index: MaterialIndex,
     stack: Vec<(Key, Visit, Scope)>,
-    draw: Buffers<Drawing, 7>,
+    draw: Buffers<Drawing, 8>,
     hits: Buffers<Hits, 4>,
     installed: [Option<(Key, u64)>; 2],
     pending: [Option<(Key, u64)>; 2],
     dirty: [bool; 2],
     #[cfg(test)]
     pub(super) mounted_visits: [usize; 2],
+    #[cfg(test)]
+    pub(super) packed_children: [usize; 2],
 }
 #[derive(Clone, Copy)]
 enum Visit {
@@ -519,8 +625,8 @@ impl Subtree {
     }
 }
 pub(super) fn extra_clip_masks(explicit: usize, scrollports: usize) -> usize {
-    // One escape mask per opt-in, plus scroll-content and chrome masks.
-    explicit + 2 * scrollports
+    // Explicit escapes, and independent ordinary, escaping-content and chrome chains.
+    explicit + 3 * scrollports
 }
 impl Output {
     pub fn reserve_bands(
@@ -536,7 +642,7 @@ impl Output {
         Ok(())
     }
     pub fn reserve_poses(&mut self, count: usize, b: Budget) -> Result<(), String> {
-        self.draw.reserve([0, 0, 0, 0, 0, 0, count], b)?;
+        self.draw.reserve([0, 0, 0, 0, 0, 0, count, 0], b)?;
         self.hits.reserve([0, 0, count, 0], b)
     }
     pub fn reserve_materials(
@@ -553,7 +659,7 @@ impl Output {
                 .reserve([0, 2 * count + 2 * words + guards, 0, 0], b)?;
             self.index.reserve(keys)?;
             self.draw
-                .reserve([0, 0, 0, 2 * count + words + guards, count, bytes, 0], b)?;
+                .reserve([0, 0, 0, 2 * count + words + guards, count, bytes, 0, 0], b)?;
         }
         Ok(())
     }
@@ -579,6 +685,7 @@ impl Output {
                 0,
                 0,
                 0,
+                0,
             ],
             b,
         )?;
@@ -594,10 +701,16 @@ impl Output {
             self.dirty[0] = false;
         }
     }
+    // A newly visible material may be keyed far beyond the previous window.
+    // Make its index slot addressable on the declaration edit, not in packing.
+    pub(super) fn prepare_material(&mut self, k: Key) {
+        self.index.prepare(k);
+    }
     pub fn collect(&mut self, e: &Elements, root: Option<Key>, layers: &Layers) {
         #[cfg(test)]
         {
             self.mounted_visits = [0; 2];
+            self.packed_children = [0; 2];
         }
         for side in 0..2 {
             let stamp = root.map(|k| (k, layers.parts[k].ports[side].revision));
@@ -614,12 +727,13 @@ impl Output {
             }
             if side == 0 {
                 self.index.begin();
+                #[cfg(test)]
+                {
+                    self.fits.additions = 0;
+                }
                 self.draw.build.clear()
             } else {
-                self.hits.build.clips.clear();
-                self.hits.build.planes.0.clear();
-                self.hits.build.scrolls.clear();
-                self.hits.build.items.clear()
+                self.hits.build.clear()
             }
             self.stack.extend(root.map(|k| {
                 (
@@ -709,7 +823,7 @@ impl Output {
                         continue;
                     }
                     Visit::Border => {
-                        let ctx = layers.paint[k];
+                        let ctx = layers.painted(k);
                         let draw = &mut self.draw.build;
                         draw.scope = scope;
                         let material = self.index.get(draw, e, k);
@@ -730,7 +844,7 @@ impl Output {
                         branch,
                     } => (rounded_parent, branch),
                 };
-                let p = layers.parts[k];
+                let p = layers.parts[k].at(layers.projection(k));
                 if !p.ports[side].nonempty {
                     continue;
                 }
@@ -738,7 +852,7 @@ impl Output {
                 if e.slots[k].slot.is_some() {
                     self.mounted_visits[side] += 1;
                 }
-                let ctx = layers.paint[k];
+                let ctx = layers.painted(k);
                 let a = &e.attrs[k];
                 let decor = a.decor;
                 let (planes, clips) = if side == 0 {
@@ -867,19 +981,24 @@ impl Output {
                 let mask = clips.add(mask, inner);
                 let inner_shape = || ctx.inner_guard(a, inner);
                 if exports && a.clip_nearby {
-                    // Only explicit guards follow an escape, even through scroll content.
+                    // This includes the host's own escaping slots.
                     branch.escape.mask = clips.add(branch.escape.mask, Some(inner_shape()));
                 }
                 let mut content = Scope { mask, ..scope };
                 if ctx.scrollport {
-                    // Ordinary content, including its shadows, always stays inside the port.
                     if inner.is_none() {
                         content.mask = clips.add(mask, Some(inner_shape()));
                     }
-                    content.guard = Coords {
-                        plane: id,
-                        mask: content.mask,
-                    };
+                    if side == 0 {
+                        let guards = &mut self.draw.build.shadow_guards;
+                        guards.push(pose::ShadowGuard {
+                            parent: scope.shadow,
+                            plane: id,
+                            inner: inner_shape(),
+                            axes: a.scroll.enabled,
+                        });
+                        content.shadow = guards.len() as u32;
+                    }
                 }
                 self.submit_escapes(e, k, layers, side, &mut branch);
                 if side == 0 && (p.paint.text.is_some() || e.slots[k].shape == Shape::Image) {
@@ -897,15 +1016,44 @@ impl Output {
                 }
                 let scope = Scope { mask, ..scope };
                 let paragraph = e.slots[k].shape == Shape::Paragraph;
-                let child_branch = Branch { wheel, ..branch };
+                let mut child_branch = Branch { wheel, ..branch };
+                if ctx.scrollport && exports && !a.clip_nearby {
+                    let clips = if side == 0 {
+                        &mut self.draw.build.clips
+                    } else {
+                        &mut self.hits.build.clips
+                    };
+                    child_branch.escape.mask = clips.add(branch.escape.mask, Some(inner_shape()));
+                }
                 let mut ordinal = self.stack.len();
                 let park_floats =
                     paragraph && self.inline_visits(e, k, layers, side, content, child_branch);
                 let rounded_parent = inner.is_some() && !ctx.scrollport;
-                for &c in e.children(k).iter().rev().filter(|&&c| {
-                    layers.parts[c].ports[side].nonempty
-                        && (!paragraph || e.float_side(c).is_some())
-                }) {
+                let mut coverage = if side == 0
+                    && !paragraph
+                    && e.children(k).len() > 1
+                    && !ctx.transformed
+                    && a.opacity.is_none()
+                    && e.slots[k].stats.mounts == 0
+                    && !layers.scroll.exhaustive()
+                {
+                    coverage::Coverage::within(content, &self.draw.build.clips)
+                } else {
+                    None
+                };
+                for &c in layers.scroll.children_rev(e, k) {
+                    #[cfg(test)]
+                    {
+                        self.packed_children[side] += 1;
+                    }
+                    if !layers.parts[c].ports[side].nonempty
+                        || (paragraph && e.float_side(c).is_none())
+                        || coverage
+                            .as_mut()
+                            .is_some_and(|cover| cover.hides(e, layers, c))
+                    {
+                        continue;
+                    }
                     let visit = if park_floats && layers.parts[c].ports[side].exports {
                         // Both traversals use reverse declaration order. Advance one cursor
                         // through the inline visits; park the chain directly on its release.
@@ -983,10 +1131,10 @@ impl Output {
         );
     }
     fn leaf(&mut self, e: &Elements, k: Key, layers: &Layers, scope: Scope, bleed: u8) {
-        let ctx = layers.paint[k];
+        let ctx = layers.painted(k);
         let draw = &mut self.draw.build;
         draw.scope = scope;
-        if let Some(glyphs) = layers.parts[k].paint.text {
+        if let Some(glyphs) = layers.parts[k].at(layers.projection(k)).paint.text {
             let run = layers.runs[k];
             let start = draw.ids.len();
             for g in layers.text.glyphs.get(&run.span) {
@@ -1180,6 +1328,16 @@ impl Raster {
         self.target_at(x, y).map(|(_, id, x, y)| (id, x, y))
     }
     #[cfg(test)]
+    pub(super) fn pack_counts(&self) -> (usize, usize, usize, usize) {
+        let out = &self.tree.output;
+        (
+            out.drawing().commands.len(),
+            out.drawing().ids.len(),
+            out.fits.additions,
+            out.hits.current().items.len(),
+        )
+    }
+    #[cfg(test)]
     pub(super) fn replay_drawing(&self) -> Vec<u8> {
         rasterize(self.tree.layers.viewport, self.tree.output.drawing()).unwrap()
     }
@@ -1328,11 +1486,15 @@ fn replay(
         if let Some((material, rect)) = cmd.outer_shadow(&draw.materials) {
             // Ordinary host clips constrain the box, not its outer shadow.
             // Apply the same transform without installing those clips.
-            let _shadow_pose = (plane.is_some() || scope.guard != Coords::default()).then(|| {
+            let _shadow_pose = (scope.shadow != 0
+                || plane.is_some()
+                || scope.guard != Coords::default())
+            .then(|| {
                 let restore = skia_safe::AutoCanvasRestore::guard(canvas, true);
                 if scope.guard != Coords::default() {
                     scope.guard.clip(draw, canvas);
                 }
+                pose::ShadowGuard::apply(scope.shadow, draw, canvas);
                 if let Some(p) = plane {
                     canvas.concat(&p.matrix);
                 }

@@ -182,18 +182,19 @@ impl MaterialIndex {
             .try_set_capacity(n)
             .map_err(pool::capacity_error)
     }
+    pub fn prepare(&mut self, k: Key) {
+        self.by_owner.entry(k).unwrap().or_default();
+    }
     pub fn begin(&mut self) {
         self.epoch += 1;
     }
     pub fn get(&mut self, draw: &mut Drawing, e: &Elements, k: Key) -> u32 {
-        if let Some(&(stamp, i)) = self.by_owner.get(k)
-            && stamp == self.epoch
-        {
-            return i;
+        let (stamp, index) = &mut self.by_owner[k];
+        if *stamp != self.epoch {
+            *index = draw.materials.add(e, k);
+            *stamp = self.epoch;
         }
-        let i = draw.materials.add(e, k);
-        self.by_owner.insert(k, (self.epoch, i));
-        i
+        *index
     }
     pub fn brush(
         &mut self,

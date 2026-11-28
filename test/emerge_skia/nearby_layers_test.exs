@@ -179,7 +179,7 @@ defmodule EmergeSkia.NearbyLayersTest do
     end
   end
 
-  test "the scrolled inline escape keeps its owner's inverse; the port guard can be added and removed" do
+  test "a scrolled inline escape keeps its owner's inverse inside the stationary port guard" do
     size = {120, 100}
 
     scene = fn guard, mounted ->
@@ -216,16 +216,14 @@ defmodule EmergeSkia.NearbyLayersTest do
       assert {:ok, ^frame} = EmergeSkia.render_to_pixels(r)
       assert frame == export(scene.(clip, true), size)
 
-      if clip do
-        assert sample(frame, 120, elem(point, 0), elem(point, 1)) == <<255, 255, 0, 255>>
-        BoxAssertions.click(r, point, :paper, point)
-      else
-        assert sample(frame, 120, elem(point, 0), elem(point, 1)) == <<0, 255, 0, 255>>
-        for phase <- [:press, :release], do: BoxAssertions.button(r, phase, point)
-        assert_receive {:application, {:menu, %{x: lx, y: ly}}}
-        assert_in_delta lx, 3, 0.001
-        assert_in_delta ly, 8, 0.001
-      end
+      assert sample(frame, 120, elem(point, 0), elem(point, 1)) == <<255, 255, 0, 255>>
+      BoxAssertions.click(r, point, :paper, point)
+      inside = {elem(point, 0), 38.0}
+      assert sample(frame, 120, elem(inside, 0), 38) == <<0, 255, 0, 255>>
+      for phase <- [:press, :release], do: BoxAssertions.button(r, phase, inside)
+      assert_receive {:application, {:menu, %{x: lx, y: ly}}}
+      assert_in_delta lx, 3, 0.001
+      assert_in_delta ly, 8 + elem(point, 1) - 38, 0.001
     end
   end
 

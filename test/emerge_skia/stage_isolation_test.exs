@@ -86,6 +86,24 @@ if System.get_env("EMERGE_TEST_STAGES") in ~w(headless raster opengl vulkan) do
         )
       end
 
+      def render(%{pose: {:list, pos}}) do
+        column(
+          [width(px(64)), height(px(64)), scrollbar_y(), scroll_y(pos)],
+          for i <- 0..63 do
+            el(
+              [
+                key(i),
+                width(px(64)),
+                height(px(16)),
+                Background.color(if(i < 60, do: :red, else: :blue)),
+                Event.on_click({:row, i})
+              ],
+              none()
+            )
+          end
+        )
+      end
+
       def render(%{pose: {:packed_menu, sibling}}) do
         menu =
           el(
@@ -704,6 +722,38 @@ if System.get_env("EMERGE_TEST_STAGES") in ~w(headless raster opengl vulkan) do
         assert {:ok, <<0, 255, 0, 255>>} = EmergeSkia.render_to_pixels(r, region: {25, 5, 1, 1})
         click_point(r, {25.0, 5.0})
         assert_receive {:routed, {:menu, %{x: 25.0, y: 5.0}}}
+      end
+
+      test "a held or rejected long-list jump cannot install its window's pixels or routes", %{
+        v: v,
+        r: r
+      } do
+        send(v, {:pose, {:list, 0.0}})
+        stage(:installed, 3)
+        gate(r, :opportunity, true)
+        # 960px of overflow → 956.25px. Both the row and its local Y
+        # differ at the same screen pixel once this candidate is installed.
+        send(v, {:pose, {:list, 255 / 256}})
+        stage(:ready, 4)
+
+        row = fn color, index, local_y ->
+          output(r, color)
+          click_point(r, {5.0, 5.0})
+          assert_receive {:routed, {:row, ^index, %{x: 5.0, y: ^local_y}}}, 2000
+        end
+
+        row.(:red, 0, 5.0)
+        gate(r, :claimed, true)
+        gate(r, :opportunity, false)
+        claim = stage(:claimed, 4)
+        gate(r, :opportunity, true)
+        gate(r, :reject, true)
+        gate(r, :claimed, false)
+        assert stage(:reject, 4) == claim
+        row.(:red, 0, 5.0)
+        gate(r, :opportunity, false)
+        stage(:installed, 4)
+        row.(:blue, 60, 1.25)
       end
 
       test "wheel bursts use the installed scroll route; held or rejected app jumps cannot replay older input",

@@ -17,17 +17,19 @@ pub(super) enum Pass {
     Place,
     PaintContext,
     Compose,
+    Project,
 }
 use Pass::*;
 mod constrained;
 mod document;
+mod projection;
 use constrained::{Basis, HeightOffers};
 use scale::{Inputs, pixels};
 impl Pass {
     fn direction(self) -> Direction {
         match self {
             Measure | Reflow | Compose => Direction::DeepFirst,
-            Context | Flow | Place | PaintContext => Direction::ShallowFirst,
+            Context | Flow | Place | PaintContext | Project => Direction::ShallowFirst,
         }
     }
 }
@@ -223,7 +225,7 @@ impl LayoutContext {
 
 #[derive(Default)]
 pub(super) struct Layers {
-    jobs: [WorkSet; PASSES.len()],
+    jobs: [WorkSet; Project as usize + 1],
     // Later layout ranks share a single membership/link table. Each dirty
     // occurrence has one entry, irrespective of the number of dirty phases.
     deferred: Option<WorkSet<u8>>,
@@ -257,6 +259,7 @@ pub(super) struct Layers {
     placement: SecondaryMap<Key, Placement>,
     pub frames: SecondaryMap<Key, Rect>,
     pub(super) paint: SecondaryMap<Key, PaintContext>,
+    projected: SecondaryMap<Key, Option<paint::Projected>>,
     pub(super) parts: SecondaryMap<Key, Composition>,
     pub(super) viewport: Rect,
     pub(super) scale_declarations: usize,
@@ -491,7 +494,7 @@ fn changed<T: PartialEq>(map: &mut SecondaryMap<Key, T>, k: Key, value: T) -> bo
 }
 impl Layers {
     pub fn reserve(&mut self, keys: usize, capacity: usize) -> Result<(), String> {
-        for q in &mut self.jobs {
+        for q in &mut self.jobs[..Project as usize] {
             q.reserve(keys, capacity)?
         }
         macro_rules! room {($($map:ident),+) => {$(self.$map.try_set_capacity(keys).map_err(pool::capacity_error)?;)+}}
@@ -514,7 +517,7 @@ impl Layers {
             parts
         );
         #[cfg(test)]
-        pool::reserve(&mut self.trace, 7 * capacity)?;
+        pool::reserve(&mut self.trace, (Project as usize + 1) * capacity)?;
         self.bounds.reserve(capacity)?;
         self.constrained.reserve(keys)?;
         self.intrinsic.reserve(capacity)?;
@@ -606,6 +609,9 @@ impl Layers {
         {
             self.enqueue(Context, k, e);
         }
+        if moved {
+            self.scroll.forget_order(e, k);
+        }
         if moved && e.attrs[k].scroll.port() {
             self.scroll.resize(k);
             self.enqueue(PaintContext, k, e);
@@ -637,6 +643,7 @@ impl Layers {
         }
     }
     pub fn reattached_container(&mut self, k: Key, e: &Elements) {
+        self.scroll.forget_order(e, k);
         if let Some(width) = self.width.get_mut(k) {
             width.new_edge = true;
         }
@@ -644,7 +651,8 @@ impl Layers {
         self.enqueue(Compose, k, e);
     }
     pub fn evict(&mut self, k: Key) {
-        self.scroll.remove(k);
+        self.scroll.evict(k);
+        self.projected.remove(k);
         self.constrained.evict(k);
         self.paragraphs.evict(k);
         if let Some(run) = self.runs.remove(k) {
@@ -868,7 +876,7 @@ impl Layers {
                 }
             }
         }
-        for pass in [PaintContext, Compose] {
+        for pass in [PaintContext, Compose, Project] {
             self.drain(e, pass);
         }
         self.rank = 0;
@@ -908,18 +916,16 @@ impl Layers {
                 }
                 PaintContext => self.paint_context(e, k),
                 Compose => {
-                    if let Some(outputs) = paint::compose(
-                        e,
-                        k,
-                        &self.paint[k],
-                        self.runs.get(k),
-                        &mut self.parts,
-                        requested,
-                    ) && let Some(p) = e.slots[k].parent
+                    if let Some(outputs) = paint::compose(self, e, k, requested)
+                        && let Some(p) = e.slots[k].parent
                     {
                         self.invalidate_composition(p, e.depth(p), outputs)
                     }
+                    if !self.scroll.exhaustive() && self.paint[k].scrollport {
+                        self.enqueue(Project, k, e);
+                    }
                 }
+                Project => self.project(e, k),
             }
         }
         #[cfg(test)]
@@ -1720,11 +1726,14 @@ impl Layers {
         let a = &e.attrs[k];
         let inherited = parent.map(|p| self.paint[p]);
         let scale = self.context[k].inputs.scale;
-        let ordinary = e.slots[k].slot.is_none();
-        let offset = std::array::from_fn(|i| {
-            inherited.map_or(0., |p| {
-                p.offset[i] - if ordinary { p.content_scroll[i] } else { 0. }
-            }) + pixels(a.offset[i], scale)
+        let content = parent.and_then(|p| {
+            if self.scroll.exhaustive() {
+                None
+            } else if e.slots[k].slot.is_none() && e.attrs[p].scroll.port() {
+                Some(p)
+            } else {
+                self.paint[p].content
+            }
         });
         let previous = self.scroll.view(k);
         let view = self
@@ -1738,9 +1747,6 @@ impl Layers {
                 if draw { Outputs::Both } else { Outputs::Hit },
             );
         }
-        let mut f = self.local_frames[k];
-        f.x += offset[0];
-        f.y += offset[1];
         let gradient = if a.font_gradient.len != 0 {
             Some((k, e.slots[k].ink_revision))
         } else if a.color.is_some() {
@@ -1764,86 +1770,56 @@ impl Layers {
                 ) << i)
             });
         let shape = e.slots[k].shape;
-        let escape_boundary = inherited.map_or(self.viewport, |p| p.escape_clip);
-        let escaping = e.slots[k].slot.is_some_and(Slot::escapes);
-        let clip = if escaping {
-            escape_boundary
-        } else {
-            inherited.map_or(self.viewport, |p| p.child_clip)
-        };
-        // A borrowed media shape turns with the leaf. Do not rotate the
-        // intersection with its ancestors (in particular a linear host clip).
-        let borrowed = e.layout_parent(k).filter(|&p| {
-            shape == Shape::Image
-                && a.posed()
-                && !a.image_host_clip
-                && !e.attrs[p].scroll.port()
-                && e.attrs[p].clips_media()
-        });
-        let outer = borrowed.map_or(clip, |p| {
-            let host = self.paint[p];
-            e.slots[p].shape.child_clip(host.clip, host.frame)
-        });
         let ctx = self.context[k];
-        let clip = if a.posed() && shape != Shape::Image {
-            a.pose.local_clip(f, outer)
-        } else {
-            outer
-        };
-        let escape_clip = if !a.posed() {
-            escape_boundary
-        } else if outer == escape_boundary && shape != Shape::Image {
-            clip
-        } else {
-            a.pose.local_clip(f, escape_boundary)
-        };
-        let next = PaintContext {
-            frame: f,
-            escape_boundary,
-            escape_clip: if a.clip_nearby {
-                escape_clip
-                    .intersection(a.decor.inner_rect(f, scale))
-                    .unwrap_or_default()
-            } else {
-                escape_clip
-            },
-            content_scroll: view.offset(),
-            scrollport: a.scroll.port(),
-            bars: view.range != [0.; 2],
-            boundary: outer,
-            clip,
-            child_clip: if shape == Shape::Image && a.posed() {
-                borrowed.map_or(f, |p| {
-                    let host = self.paint[p];
-                    e.attrs[p].decor.inner_rect(host.frame, host.scale)
-                })
-            } else if shape == Shape::Image {
-                // A leaf's content is the sample, not another layout box.
-                if e.slots[k].slot.is_some() {
-                    clip
-                } else {
-                    clip.media_clip(inherited)
-                }
-            } else if a.clips_media() || a.scroll.port() {
-                clip.intersection(a.decor.inner_rect(f, scale))
-                    .unwrap_or_default()
-            } else {
-                shape.child_clip(clip, f)
-            },
+        let escaping = e.slots[k].slot.is_some_and(Slot::escapes);
+        let next = paint::PaintContext {
+            content,
             color,
             gradient,
             rules,
-            offset,
-            scale: ctx.inputs.scale,
+            scale,
+            content_scroll: view.offset(),
+            scrollport: a.scroll.port(),
+            bars: view.range != [0.; 2],
             transformed: a.posed() || inherited.is_some_and(|p| p.transformed),
             zoom: inherited.map_or(1., |p| p.zoom) * a.pose.zoom.abs(),
             text_align: ctx.text_align,
-        };
+            ..Default::default()
+        }
+        .geometry(
+            e,
+            k,
+            self.local_frames[k],
+            self.viewport,
+            inherited,
+            content.is_none(),
+        );
+        let (f, clip, outer, offset) = (next.frame, next.clip, next.boundary, next.offset);
         let old = self.paint.get(k).copied();
         if old == Some(next) {
             return;
         }
         self.paint.insert(k, next);
+        let content_edge = old.and_then(|p| p.content) != content;
+        if content_edge {
+            // Initialize storage when a key enters scroll content, not up to a
+            // distant ordinal on its first reveal. None is not a projection.
+            if content.is_some() {
+                self.jobs[Project as usize].prepare_slot(k);
+                self.projected.insert(k, None);
+                #[cfg(test)]
+                {
+                    self.scroll.counts.content_slots += 1;
+                }
+            } else {
+                self.projected.remove(k);
+            }
+        }
+        if content_edge
+            || (content.is_some() && old.is_none_or(|p| p.frame != f || p.zoom != next.zoom))
+        {
+            self.invalidate_composition(k, e.depth(k), Outputs::Both);
+        }
         if let Some(p) = ctx.inline_host {
             let hit = a.click && old.is_none_or(|ctx| ctx.scale != next.scale || ctx.frame != f);
             self.invalidate_composition(
@@ -1864,7 +1840,11 @@ impl Layers {
         let port_changed =
             old.is_none_or(|p| p.scrollport != next.scrollport || p.bars != next.bars);
         let port_changed = (next.scrollport || old.is_some_and(|p| p.scrollport))
-            && (port_changed || geometry_changed || old.is_none_or(|p| p.scale != next.scale));
+            && (port_changed
+                || geometry_changed
+                || old.is_none_or(|p| {
+                    p.scale != next.scale || p.content_escape != next.content_escape
+                }));
         let guarded = a.clip_nearby && e.slots[k].stats.escapes > 0;
         let draw = port_changed
             || guarded
@@ -1886,9 +1866,12 @@ impl Layers {
         }
         let outer_clip_changed = old.is_none_or(|p| p.clip != clip);
         let frame_changed = old.is_none_or(|p| p.frame != f);
-        let escape_clip_changed = old.is_none_or(|p| p.escape_clip != next.escape_clip);
+        let escape_clip_changed = old.is_none_or(|p| {
+            p.escape_clip != next.escape_clip || p.content_escape != next.content_escape
+        });
         let content_changed = old.is_none_or(|p| {
-            p.content_scroll != next.content_scroll || p.scrollport != next.scrollport
+            (self.scroll.exhaustive() && p.content_scroll != next.content_scroll)
+                || p.scrollport != next.scrollport
         });
         if child_clip_changed
             || escape_clip_changed
@@ -1896,9 +1879,11 @@ impl Layers {
             || inputs_changed
             || outer_clip_changed
             || frame_changed
+            || content_edge
         {
             for &child in e.owned(k) {
-                if (content_changed && e.slots[child].slot.is_none())
+                if content_edge
+                    || (content_changed && e.slots[child].slot.is_none())
                     || escape_clip_changed
                     || child_clip_changed
                     || inputs_changed

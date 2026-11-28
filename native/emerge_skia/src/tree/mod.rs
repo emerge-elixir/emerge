@@ -668,7 +668,7 @@ impl Tree {
             self.prepare_display(scale)?;
         }
         self.layers
-            .invalidate_changes(&mut self.elements, self.root);
+            .invalidate_changes(&mut self.elements, self.root, &mut self.output);
         self.layers
             .recompute(&self.elements, self.root, width, height);
         self.layers.bounds.context_dirty = false;

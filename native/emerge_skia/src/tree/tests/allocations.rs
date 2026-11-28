@@ -97,6 +97,68 @@ fn scroll_projection(c: &Counter) {
         );
     }
 }
+// Selection is scratch on the layout owner. Growing a workspace is allowed
+// only before acceptance, never on first projection or on fallback to all rows.
+fn long_scroll_window(c: &Counter) {
+    let n = 1024;
+    let bytes = scrolling::visibility::list(n, false, false, true);
+    let mut r = Raster::default();
+    r.tree.upload(&bytes).unwrap();
+    let mut writer = Publisher::new(0);
+    let mut live = Tree::for_session(0);
+    writer.apply(&bytes, 1.).unwrap().install(&mut live);
+    for (i, pos) in [0., 1., 0.5, 0.].into_iter().enumerate() {
+        c.zero(
+            "reserved first window and far seek on both admission paths",
+            || {
+                for t in [&mut r.tree, &mut live] {
+                    if i != 0 {
+                        assert!(scrolling::set_input(t, 1, [0., pos], i as u64, None));
+                    }
+                    t.refresh(100., 80., 1.).unwrap();
+                    assert_eq!(t.output.packed_children, [4; 2]);
+                    let s = t.seal().unwrap();
+                    assert_eq!(
+                        s.hits.target_at(s.viewport, 5., 5.).unwrap().1,
+                        10 + ((n - 4) as f64 * pos) as u64
+                    );
+                }
+            },
+        );
+    }
+    let all = (10..10 + n).filter(|i| i % 2 == 1).map(|id| {
+        attr_record(
+            id,
+            4,
+            block(&[
+                px(1, 100.),
+                px(2, 20.),
+                number(32, -20. * (id - 10) as f64),
+                color([0, 0, 255]),
+                vec![40, 1],
+            ]),
+        )
+    });
+    let order = edges(1, 3, &(10..10 + n).collect::<Vec<_>>());
+    let edits = patch(1, 1, &std::iter::once(order).chain(all).collect::<Vec<_>>());
+    r.tree.patch(&edits).unwrap();
+    writer.apply(&edits, 1.).unwrap().install(&mut live);
+    for t in [&mut r.tree, &mut live] {
+        c.zero(
+            "refit, save alternating disjoint runs, pack in original order",
+            || {
+                t.refresh(100., 80., 1.).unwrap();
+                let s = t.seal().unwrap();
+                assert_eq!(s.hits.target_at(s.viewport, 5., 5.).unwrap().1, n + 9);
+            },
+        );
+    }
+    let before = r.tree.encode();
+    let grow = at(scrolling::visibility::list(4096, false, false, true), 1);
+    (c.fail_next_reserve)();
+    assert!(r.tree.patch(&grow).is_err());
+    assert_eq!(r.tree.encode(), before);
+}
 fn nearby_bands(c: &Counter) {
     use nearby::mounted;
     let n = MAX_DEPTH as u64 + 1;
@@ -1436,6 +1498,7 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     nearby_layout(&c);
     empty_exporters(&c);
     scroll_projection(&c);
+    long_scroll_window(&c);
     let mut split = Raster::default();
     split.tree.upload(&transforms::split_prose()).unwrap();
     c.zero(

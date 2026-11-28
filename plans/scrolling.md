@@ -1,5 +1,7 @@
 # Retained scrolling
 
+**Historical controller checkpoint.** The [scroll visibility checkpoint](scroll-paint-visibility.md) supersedes the descendant escape rule below; the controller and range contract is unchanged.
+
 **Delivered:** the existing `Scroll` helpers and `Event.on_scroll/1` on supported block containers. No new widget, wire version, NIF or layout engine. Reference: `main` at `aef5e42fc789c396505f85c34810b2ca9c008586`, its `tree/scrollbar.rs` and `events/scroll.rs`, the public [controller contract](../lib/emerge/ui/scroll.ex) and the [Nearby clipping contract](../lib/emerge/ui/nearby.ex).
 
 ## Implementation plan
@@ -15,9 +17,9 @@ Scope is scrollable block containers on the retained shapes. Editors, focus/key 
 
 Both one-shot raster declarations were rejected before the port (`unsupported attribute 7 in first slice`). On pinned `main`, in a 100px-tall scrollable Column with a 20px leading child and a 10px bottom-aligned child, `(5,23)` was blue and `(5,93)` transparent. Retained matches: the bottom group starts at y=20, not y=90. The native mixed-zone control adds a center child and real overflow; see [S1](alignment.md#text-alignment-and-dependent-sites).
 
-A 100×40 scrollport sits above a yellow navigation row. With no `clip_nearby()`, pinned `main` and retained both draw the scroller's **blue** `below` panel at `(10,42)` and the scrolling row's **green** `below` panel at `(50,42)`. The initial retained implementation showed yellow at the second point; that implicit clip is not the contract. [#124](https://github.com/emerge-elixir/emerge/pull/124) is a comparison, not a fix to adopt. These are one-shot pixels, not evidence of input on `main`.
+A 100×40 scrollport sits above a yellow navigation row. With no `clip_nearby()`, pinned `main` and retained both draw the scroller's **blue** `below` panel at `(10,42)` and the scrolling row's **green** `below` panel at `(50,42)`. The initial retained implementation showed yellow at the second point. This checkpoint qualified the opt-in rule. The [follow-up implementation](scroll-paint-visibility.md) adopts [#124](https://github.com/emerge-elixir/emerge/pull/124): keep the port's blue panel, but clip the row's green one by default. These are one-shot pixels, not evidence of input on `main`.
 
-The [headless test](../test/emerge_skia/scrolling_test.exs) distinguishes three clip choices in the same installed scene. The row ends at y=45, the port at y=50, and the knob at y=55. Clipping the row cuts the knob at 45 but leaves the port's own panel alone. Clipping the port cuts **both** at 50. Removing the clip restores their pixels and local clicks over the navigation row.
+At this checkpoint the [headless test](../test/emerge_skia/scrolling_test.exs) distinguished three clip choices in the same installed scene. The row ends at y=45, the port at y=50, and the knob at y=55. Clipping the row cuts the knob at 45 but leaves the port's own panel alone. Clipping the port cuts **both** at 50. Removing the clip restores their pixels and local clicks over the navigation row.
 
 ## Verification
 

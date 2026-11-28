@@ -244,13 +244,14 @@ impl Output {
         b: Budget,
     ) -> Result<(), String> {
         if n != 0 {
+            self.draw.reserve([0, 0, 0, 0, 0, 0, 0, n], b)?;
             self.hits
                 .reserve([owners + 2 * words + 2 * n, 0, 0, n], b)?;
         }
         Ok(())
     }
     pub(super) fn chrome(&mut self, e: &Elements, k: Key, l: &Layers, side: usize, scope: Scope) {
-        let ctx = l.paint[k];
+        let ctx = l.painted(k);
         if side == 0 {
             let draw = &mut self.draw.build;
             draw.scope = scope;

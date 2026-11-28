@@ -229,7 +229,7 @@ defmodule EmergeSkia.ScrollingTest do
     ])
   end
 
-  test "a row's scroll-moving overlay and the scrollport's own overlay respect only opted-in clips" do
+  test "the port guards a row's moving overlay but needs clip_nearby to guard its own overlay" do
     {pid, r} = Headless.mount({100, 100}, fn -> page(:open) end, [:pointer_button])
     # The row ends at y=45, the scrollport at y=50. The knob spans y=35..55.
     sites = [{50, 42}, {50, 47}, {50, 52}, {10, 52}]
@@ -242,10 +242,10 @@ defmodule EmergeSkia.ScrollingTest do
     }
 
     cases = [
-      open: [:knob, :knob, :knob, :fixed],
+      open: [:knob, :knob, :nav, :fixed],
       row: [:knob, :last, :nav, :fixed],
       port: [:knob, :knob, :nav, :nav],
-      open: [:knob, :knob, :knob, :fixed]
+      open: [:knob, :knob, :nav, :fixed]
     ]
 
     for {{clip, winners}, step} <- Enum.with_index(cases) do
@@ -266,6 +266,105 @@ defmodule EmergeSkia.ScrollingTest do
         assert pixel(p, 100, x, y) == rgba
         BoxAssertions.click(r, {x * 1.0, y * 1.0}, winner, {x - ox, y - oy})
       end
+    end
+  end
+
+  defp dims(w, h), do: [width(px(w)), height(px(h))]
+
+  defp cast(x, y, color), do: Border.shadow(offset: {x, y}, size: 0, blur: 0, color: color)
+
+  defp installed(r, tree) do
+    pixels = Headless.pixels()
+    assert {:ok, ^pixels} = EmergeSkia.render_to_pixels(r)
+
+    assert pixels ==
+             EmergeSkia.TreeRenderer.render_to_pixels(
+               tree,
+               [otp_app: :emerge, width: 100, height: 100],
+               5000
+             )
+
+    pixels
+  end
+
+  defp cross(axis, both) do
+    {stack, across, guard, other, spacer, box, filler, effect} =
+      if axis == :y do
+        {&column/2, &row/2, scrollbar_y(), scrollbar_x(), {20, 40}, {40, 20}, {50, 80},
+         cast(12, 2, :green)}
+      else
+        {&row/2, &column/2, scrollbar_x(), scrollbar_y(), {40, 20}, {20, 40}, {80, 50},
+         cast(2, 12, :green)}
+      end
+
+    port = dims(40, 40) ++ [guard, Background.color(:blue)] ++ if(both, do: [other], else: [])
+    rect = fn {w, h}, props -> el(dims(w, h) ++ props, none()) end
+
+    across.(dims(100, 100) ++ [Background.color(:yellow), Event.on_click(:paper)], [
+      rect.(spacer, []),
+      stack.(port, [rect.(box, [Background.color(:red), effect]), rect.(filler, [])])
+    ])
+  end
+
+  test "ordinary outer shadows can cross the free axis, never the biaxial scroll guard" do
+    {pid, r} = Headless.mount({100, 100}, fn -> cross(:y, false) end, [:pointer_button])
+
+    for {{axis, both}, i} <-
+          Enum.with_index([{:y, false}, {:y, true}, {:x, false}, {:x, true}, {:y, false}]) do
+      if i > 0, do: send(pid, {:scene, fn -> cross(axis, both) end})
+      frame = installed(r, cross(axis, both))
+      {x, y} = if axis == :y, do: {65, 12}, else: {12, 65}
+
+      assert pixel(frame, 100, x, y) ==
+               if(both, do: <<255, 255, 0, 255>>, else: <<0, 255, 0, 255>>)
+
+      BoxAssertions.click(r, {x * 1.0, y * 1.0}, :paper, {x * 1.0, y * 1.0})
+    end
+  end
+
+  defp strip(mode, shadows) do
+    fx = if shadows, do: [cast(8, 0, color_rgba(0, 0, 0, 0.5))], else: []
+
+    pages =
+      Enum.map([:red, :green, :blue], fn c ->
+        el(dims(50, 100) ++ [padding(5)], card(c, 40, 90, c, fx))
+      end)
+
+    position =
+      case mode do
+        :moved -> Transform.move_x(-50)
+        :placed -> center_x()
+        :turned -> Transform.rotate(180)
+      end
+
+    el(
+      dims(100, 100) ++ [Background.color(color_rgb(128, 128, 128)), Event.on_click(:paper)],
+      row(dims(50, 100), [el(dims(50, 100), row([position | dims(150, 100)], pages))])
+    )
+  end
+
+  test "a moved or turned carousel clips actual cards and clicks without cutting their outer shadows" do
+    {pid, r} = Headless.mount({100, 100}, fn -> strip(:moved, true) end, [:pointer_button])
+
+    for {{mode, shadows}, i} <-
+          Enum.with_index(for s <- [true, false], m <- [:moved, :placed, :turned], do: {m, s}) do
+      if i > 0, do: send(pid, {:scene, fn -> strip(mode, shadows) end})
+      frame = installed(r, strip(mode, shadows))
+
+      assert pixel(frame, 100, 75, 50) ==
+               if(shadows, do: <<64, 64, 64, 255>>, else: <<128, 128, 128, 255>>)
+
+      assert pixel(frame, 100, 25, 50) ==
+               if(mode == :turned, do: <<0, 0, 255, 255>>, else: <<0, 255, 0, 255>>)
+
+      BoxAssertions.click(r, {75.0, 50.0}, :paper, {75.0, 50.0})
+
+      BoxAssertions.click(
+        r,
+        {25.0, 50.0},
+        if(mode == :turned, do: :blue, else: :green),
+        {20.0, 45.0}
+      )
     end
   end
 

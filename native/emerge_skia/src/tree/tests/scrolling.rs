@@ -1,6 +1,8 @@
 use super::nearby::mounted;
 use super::*;
 use std::time::{Duration, Instant};
+mod scopes;
+pub(super) mod visibility;
 
 fn fraction(tag: u8, v: f64) -> Bytes {
     [tag, 0].into_iter().chain(v.to_be_bytes()).collect()
@@ -18,7 +20,13 @@ fn view(r: &Raster, id: u64) -> scroll::View {
 fn box_attrs(w: f64, h: f64) -> Bytes {
     block(&[px(1, w), px(2, h), vec![40, 1], color([1, 2, 3])])
 }
-fn set_input(t: &mut Tree, id: u64, xy: [f64; 2], serial: u64, at: Option<Instant>) -> bool {
+pub(super) fn set_input(
+    t: &mut Tree,
+    id: u64,
+    xy: [f64; 2],
+    serial: u64,
+    at: Option<Instant>,
+) -> bool {
     let k = t.elements.ids[&id];
     let mut axes = t.layers.scroll.view(k).axes;
     for (i, a) in axes.iter_mut().enumerate() {
@@ -66,9 +74,9 @@ fn ordinary_extents_include_padding_not_mounts_and_input_never_reopens_layout() 
             .layers
             .trace
             .iter()
-            .all(|(p, _, _)| matches!(p, PaintContext | Compose))
+            .all(|(p, _, _)| matches!(p, PaintContext | Compose | Project))
     );
-    assert!(!ran(&r, PaintContext, 3));
+    assert!(!ran(&r, PaintContext, 3) && !ran(&r, Project, 3));
     r.tree.patch(&set(2, 4, box_attrs(50., 40.))).unwrap();
     draw(&mut r);
     assert_eq!(view(&r, 1).range, [0., 0.]);
@@ -165,7 +173,7 @@ fn scrollable_column_zones_start_at_the_end_of_the_leading_group() {
     check_fresh(&r);
 }
 #[test]
-fn scrollport_clips_ordinary_content_but_only_clips_nearby_if_requested() {
+fn scroll_content_guard_follows_ordinary_and_nearby_edges_through_a_role_change() {
     let mut r = Raster::default();
     let guard = |clip: bool, round| {
         block(&[
@@ -224,21 +232,12 @@ fn scrollport_clips_ordinary_content_but_only_clips_nearby_if_requested() {
         for (clip, radius) in [(false, 12.), (true, 12.), (true, 0.), (false, 12.)] {
             r.tree.patch(&set(2, 3, guard(clip, radius))).unwrap();
             draw(&mut r);
-            let clipped = !nearby || clip;
             for (x, y, (color, id)) in [
-                (25, 36, if clipped { paper } else { bitmap }),
-                (
-                    31,
-                    31,
-                    if clipped && radius != 0. {
-                        paper
-                    } else {
-                        bitmap
-                    },
-                ),
+                (25, 36, paper),
+                (31, 31, if radius != 0. { paper } else { bitmap }),
                 (46, 36, bitmap),
                 (46, 64, shadow),
-                (46, 74, if clipped { paper } else { shadow }),
+                (46, 74, paper),
             ] {
                 let i = 4 * (180 * y + x);
                 assert_eq!(
