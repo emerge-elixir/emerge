@@ -64,7 +64,7 @@ impl Drawing {
         while i < end {
             let (scope, cmd) = &self.commands[i];
             let extent = match cmd {
-                Command::Fill(rect, _) => sk(*rect).with_outset((1., 1.)),
+                Command::Fill(rect, _) | Command::Thumb(rect, _) => sk(*rect).with_outset((1., 1.)),
                 Command::Box {
                     rect,
                     material,

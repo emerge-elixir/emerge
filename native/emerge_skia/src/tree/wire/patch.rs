@@ -10,6 +10,7 @@ struct Demand {
     edges: usize,
     tags: usize,
     clip_nearby: usize,
+    scrolls: usize,
     texts: usize,
     scales: usize,
     prose_hosts: usize,
@@ -35,6 +36,7 @@ impl Demand {
             edges: e.orders.keys.len(),
             tags: e.orders.tags.len(),
             clip_nearby: t.output.clip_nearby,
+            scrolls: t.output.scrolls,
             texts: t.layers.text_count,
             scales: t.layers.scale_declarations,
             prose_hosts: t.layers.paragraphs.hosts,
@@ -162,6 +164,7 @@ impl Tree {
                 d.prose_hosts -= usize::from(e.slots[k].shape.has_prose_sites());
                 d.images -= usize::from(e.attrs[k].has_art());
                 d.clip_nearby -= usize::from(e.attrs[k].clip_nearby);
+                d.scrolls -= usize::from(e.attrs[k].scroll.tracked());
                 d.groups -= usize::from(e.attrs[k].opacity.is_some());
                 d.poses -= usize::from(e.attrs[k].pose_declared);
                 d.materials -= usize::from(e.attrs[k].material());
@@ -223,6 +226,7 @@ impl Tree {
             d.prose_hosts += usize::from(s.shape.has_prose_sites());
             d.images += usize::from(a.has_art());
             d.clip_nearby += usize::from(a.clip_nearby);
+            d.scrolls += usize::from(a.scroll.tracked());
             d.groups += usize::from(a.opacity.is_some());
             d.poses += usize::from(a.pose_declared);
             d.materials += usize::from(a.material());
@@ -354,6 +358,9 @@ impl Tree {
             0
         };
         let words = d.words;
+        self.layers.scroll.reserve(d.scrolls)?;
+        self.output
+            .reserve_scrolls(d.scrolls, d.live, words, self.budget)?;
         self.output.fits.reserve(d.images, self.budget)?;
         self.output
             .reserve_poses(d.poses * (1 + usize::from(tree.escapes != 0)), self.budget)?;
@@ -375,7 +382,7 @@ impl Tree {
             d.materials,
             d.material_bytes,
             words,
-            d.clip_nearby,
+            paint::extra_clip_masks(d.clip_nearby, d.scrolls),
             self.budget,
         )?;
         self.output.reserve_for(
@@ -384,11 +391,12 @@ impl Tree {
             words,
             d.materials
                 + d.images
+                + 2 * d.scrolls
                 + tree.extra_commands()?
                 + 2 * d.groups
                 + if d.groups > 0 { 2 * words } else { 0 }
                 + if d.rules > 0 { 2 * d.texts } else { 0 },
-            d.groups + tree.mounts,
+            d.groups + tree.mounts + d.scrolls,
             self.budget,
         )?;
         b.prepare_domains(
@@ -419,6 +427,7 @@ impl Tree {
         for s in &b.entries {
             if !s.attached {
                 if let Some(&k) = e.ids.get(&s.id) {
+                    self.layers.scroll.remove(k);
                     e.detach(k);
                 }
                 continue;
@@ -505,6 +514,7 @@ impl Tree {
         self.output.rules = d.rules;
         self.output.groups = d.groups;
         self.output.clip_nearby = d.clip_nearby;
+        self.output.scrolls = d.scrolls;
         self.output.poses = d.poses;
         e.images.active = d.images;
         self.layers.scale_declarations = d.scales;

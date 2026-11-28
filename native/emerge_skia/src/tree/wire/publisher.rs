@@ -13,6 +13,7 @@ struct Totals {
     images: usize,
     groups: usize,
     clip_nearby: usize,
+    scrolls: usize,
     poses: usize,
     hosts: usize,
     words: usize,
@@ -32,6 +33,7 @@ impl Totals {
         count(&mut self.images, usize::from(a.has_art()));
         count(&mut self.hosts, usize::from(shape.has_prose_sites()));
         count(&mut self.clip_nearby, usize::from(a.clip_nearby));
+        count(&mut self.scrolls, usize::from(a.scroll.tracked()));
         count(&mut self.groups, usize::from(a.opacity.is_some()));
         count(&mut self.poses, usize::from(a.pose_declared));
         count(&mut self.materials, usize::from(a.material()));
@@ -44,7 +46,7 @@ impl Totals {
 // declaration, not borrowed from a computing tree. In steady state a turn
 // carries no computed stores. Two glyph generations can overlap in measure.
 #[derive(Default, Clone, Copy)]
-struct Capacity([usize; 13]);
+struct Capacity([usize; 14]);
 impl Capacity {
     fn for_tree(t: Totals, keys: usize, tree: Subtree) -> Result<Self> {
         Ok(Self([
@@ -59,8 +61,10 @@ impl Capacity {
             t.poses * (1 + usize::from(tree.escapes != 0)),
             tree.escapes,
             tree.mounts,
-            t.clip_nearby,
+            paint::extra_clip_masks(t.clip_nearby, t.scrolls),
+            t.scrolls,
             t.materials
+                + 2 * t.scrolls
                 + tree.extra_commands()?
                 + t.images
                 + 2 * t.groups
@@ -93,13 +97,14 @@ impl Capacity {
             escapes,
             mounts,
             clip_nearby,
+            scrolls,
             extra,
         ] = self.0;
         // Conservative byte credits, including the builder, five readers,
         // secondary-map slots, glyph overlap and paragraph/clip scratch.
         // Keep the credit pinned with any sealed readers after a growth.
         let units = [
-            4096, 4096, 160, 8192, 1536, 4096, 6, 128, 2048, 128, 128, 1024, 1536,
+            4096, 4096, 160, 8192, 1536, 4096, 6, 128, 2048, 128, 128, 1024, 4096, 1536,
         ];
         let charge = self
             .0
@@ -118,8 +123,17 @@ impl Capacity {
         pool::reserve(&mut e.touched, owners)?;
         t.layers.reserve(keys, owners)?;
         t.layers.text.ensure(2 * glyphs, owners, Budget(0))?;
+        t.output.reserve_for(
+            owners,
+            glyphs,
+            words,
+            extra,
+            groups + mounts + scrolls,
+            Budget(0),
+        )?;
+        t.layers.scroll.reserve(scrolls)?;
         t.output
-            .reserve_for(owners, glyphs, words, extra, groups + mounts, Budget(0))?;
+            .reserve_scrolls(scrolls, owners, words, Budget(0))?;
         t.output.reserve_bands(escapes, groups, Budget(0))?;
         t.output
             .reserve_materials(keys, materials, bytes, words, clip_nearby, Budget(0))?;
@@ -590,6 +604,10 @@ impl Publication {
                 .elements
                 .images
                 .inherit(&mut t.elements.images, &self.version);
+            workspace
+                .layers
+                .scroll
+                .inherit(&mut t.layers.scroll, &self.version);
             workspace.output.fits.advance_from(&t.output.fits);
             *t = *workspace;
         }

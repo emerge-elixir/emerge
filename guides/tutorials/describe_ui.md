@@ -112,6 +112,10 @@ for control markers; reserve front nearby content for actual overlays. Mouse/dra
 coordinates are always relative to the listener element, not the nearby host.
 See [Handle input](handle_input.md) and `Emerge.UI.Event` for pointer interactions.
 
+A dropdown attached to a scrolling row moves with the row and can overlap the
+content outside the scroll container. Add `clip_nearby()` to the container to
+keep the dropdown's drawing and pointer hits inside it.
+
 Here is a dropdown attached to a toolbar button:
 
 ```elixir

@@ -77,6 +77,15 @@ if System.get_env("EMERGE_TEST_STAGES") in ~w(headless raster opengl vulkan) do
         ])
       end
 
+      def render(%{pose: {:scroll, pos, route}}) do
+        column(
+          [width(px(64)), height(px(64)), scrollbar_y(), scroll_y(pos), Event.on_scroll(route)],
+          Enum.map([:red, :blue], fn c ->
+            el([width(px(64)), height(px(64)), Background.color(c), Event.on_click(c)], none())
+          end)
+        )
+      end
+
       def render(%{pose: {:pack, words, msg}}) do
         row([width(fill()), height(fill())], [
           wrapped_column([width(content()), height(px(60)), spacing_xy(6, 4)], [
@@ -647,6 +656,53 @@ if System.get_env("EMERGE_TEST_STAGES") in ~w(headless raster opengl vulkan) do
     end
 
     if @api == :headless do
+      test "wheel bursts use the installed scroll route; held or rejected app jumps cannot replay older input",
+           %{v: v, r: r} do
+        wheel = fn ->
+          assert :ok == EmergeSkia.send_input(r, {:pointer_scroll, {{0, -16}, {5, 5}}})
+        end
+
+        send(v, {:pose, {:scroll, 0.0, :old}})
+        stage(:installed, 3)
+        gate(r, :commands, true)
+        wheel.()
+        assert_receive {:routed, {:old, %{y: 0.25}}}
+        wheel.()
+        assert_receive {:routed, {:old, %{y: 0.5}}}
+        send(v, {:pose, {:scroll, 0.25, :echo}})
+        stage(:computed, 4)
+        output(r, :red)
+        gate(r, :commands, false)
+        stage(:installed, 4)
+        assert {:ok, <<0, 0, 255, 255>>} = EmergeSkia.render_to_pixels(r, region: {5, 40, 1, 1})
+        gate(r, :opportunity, true)
+        # A non-echo is an app replacement. Hold it after drawing, while the
+        # display still owns the older attachment, geometry and callback route.
+        send(v, {:pose, {:scroll, 1.0, :new}})
+        stage(:ready, 5)
+        wheel.()
+        assert_receive {:routed, {:echo, %{y: 0.75}}}
+        gate(r, :claimed, true)
+        gate(r, :opportunity, false)
+        claim = stage(:claimed, 5)
+        gate(r, :opportunity, true)
+        gate(r, :reject, true)
+        gate(r, :claimed, false)
+        assert stage(:reject, 5) == claim
+        output(r, :red)
+        click_point(r, {5.0, 5.0})
+        assert_receive {:routed, {:red, %{y: 37.0}}}
+        gate(r, :opportunity, false)
+        stage(:installed, 5)
+        output(r, :blue)
+        click_point(r, {5.0, 5.0})
+        assert_receive {:routed, {:blue, %{y: 5.0}}}
+        wheel.()
+        refute_receive {:routed, {:new, _}}, 20
+        assert :ok == EmergeSkia.send_input(r, {:pointer_scroll, {{0, 16}, {5, 5}}})
+        assert_receive {:routed, {:new, %{y: 0.75}}}
+      end
+
       defp button_at(r, phase, point),
         do: assert(:ok == EmergeSkia.send_input(r, {:pointer_button, {:left, phase, [], point}}))
     else

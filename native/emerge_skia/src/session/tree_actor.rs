@@ -221,6 +221,7 @@ fn run_tree(owner: &Owner, wake: &Wake) -> Result<(), String> {
     let mut sample = None;
     let mut deadline = None;
     let mut needs_pack = false;
+    let mut scroll = Default::default();
     while !owner.lifecycle.stop.load(Ordering::Acquire) {
         owner.actor.wait(deadline.take());
         if owner.lifecycle.stop.load(Ordering::Acquire) {
@@ -237,6 +238,9 @@ fn run_tree(owner: &Owner, wake: &Wake) -> Result<(), String> {
         if c.revision != before {
             owner.admission.collected();
         }
+        // A controller echo can only be accepted after dispatch posted the
+        // corresponding input. Take the inbox after the accepted prefix.
+        c.request |= owner.scroll.collect(&mut c.tree, &mut scroll);
         if let Ok(loader) = owner.loader.1.try_recv() {
             c.assets = Some(images::Assets::new(loader));
             c.request |= c.tree.needs_images();

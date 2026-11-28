@@ -230,6 +230,7 @@ pub(super) struct Layers {
     // Retain both sides of a rotation boundary, not a second layout tree.
     local_measure: SecondaryMap<Key, Demand>,
     local_frames: SecondaryMap<Key, Rect>,
+    pub(super) scroll: scroll::Ports,
     pub(super) intrinsic: intrinsic::Intrinsic,
     // Glyph changes and intrinsic size changes have different readers.
     pub(super) runs: SecondaryMap<Key, Run>,
@@ -582,6 +583,10 @@ impl Layers {
         {
             self.enqueue(Context, k, e);
         }
+        if moved && e.attrs[k].scroll.port() {
+            self.scroll.resize(k);
+            self.enqueue(PaintContext, k, e);
+        }
         if moved && membership {
             // An incoming edge needs an offer even if our inner width is unchanged.
             if let Some(width) = self.width.get_mut(k) {
@@ -616,6 +621,7 @@ impl Layers {
         self.enqueue(Compose, k, e);
     }
     pub fn evict(&mut self, k: Key) {
+        self.scroll.remove(k);
         self.constrained.evict(k);
         self.paragraphs.evict(k);
         if let Some(run) = self.runs.remove(k) {
@@ -1627,6 +1633,13 @@ impl Layers {
             }
         }
         if changed(&mut self.frames, k, slot) || old != Some(local) {
+            if e.attrs[k].scroll.port() {
+                self.scroll.resize(k);
+            }
+            if let Some(p) = e.layout_parent(k).filter(|&p| e.attrs[p].scroll.port()) {
+                self.scroll.resize(p);
+                self.enqueue(PaintContext, p, e);
+            }
             self.enqueue(PaintContext, k, e);
         }
         e.slots[k].shape.place_children(
@@ -1648,9 +1661,24 @@ impl Layers {
         let a = &e.attrs[k];
         let inherited = parent.map(|p| self.paint[p]);
         let scale = self.context[k].inputs.scale;
+        let ordinary = e.slots[k].slot.is_none();
         let offset = std::array::from_fn(|i| {
-            inherited.map_or(0., |p| p.offset[i]) + pixels(a.offset[i], scale)
+            inherited.map_or(0., |p| {
+                p.offset[i] - if ordinary { p.content_scroll[i] } else { 0. }
+            }) + pixels(a.offset[i], scale)
         });
+        let previous = self.scroll.view(k);
+        let view = self
+            .scroll
+            .settle(e, k, self.local_frames[k], &self.frames, scale);
+        if view != previous {
+            let draw = view.range != previous.range || view.offset() != previous.offset();
+            self.invalidate_composition(
+                k,
+                e.depth(k),
+                if draw { Outputs::Both } else { Outputs::Hit },
+            );
+        }
         let mut f = self.local_frames[k];
         f.x += offset[0];
         f.y += offset[1];
@@ -1687,7 +1715,11 @@ impl Layers {
         // A borrowed media shape turns with the leaf. Do not rotate the
         // intersection with its ancestors (in particular a linear host clip).
         let borrowed = e.layout_parent(k).filter(|&p| {
-            shape == Shape::Image && a.posed() && !a.image_host_clip && e.attrs[p].clips_media()
+            shape == Shape::Image
+                && a.posed()
+                && !a.image_host_clip
+                && !e.attrs[p].scroll.port()
+                && e.attrs[p].clips_media()
         });
         let outer = borrowed.map_or(clip, |p| {
             let host = self.paint[p];
@@ -1716,6 +1748,9 @@ impl Layers {
             } else {
                 escape_clip
             },
+            content_scroll: view.offset(),
+            scrollport: a.scroll.port(),
+            bars: view.range != [0.; 2],
             boundary: outer,
             clip,
             child_clip: if shape == Shape::Image && a.posed() {
@@ -1730,7 +1765,7 @@ impl Layers {
                 } else {
                     clip.media_clip(inherited)
                 }
-            } else if a.clips_media() {
+            } else if a.clips_media() || a.scroll.port() {
                 clip.intersection(a.decor.inner_rect(f, scale))
                     .unwrap_or_default()
             } else {
@@ -1767,26 +1802,35 @@ impl Layers {
             old.is_none_or(|p| p.transformed != next.transformed || p.zoom != next.zoom);
         let inputs_changed =
             space_changed || old.is_none_or(|p| p.rules != rules || p.offset != offset);
+        let port_changed =
+            old.is_none_or(|p| p.scrollport != next.scrollport || p.bars != next.bars);
+        let port_changed = (next.scrollport || old.is_some_and(|p| p.scrollport))
+            && (port_changed || geometry_changed || old.is_none_or(|p| p.scale != next.scale));
         let guarded = a.clip_nearby && e.slots[k].stats.escapes > 0;
-        let draw = guarded
+        let draw = port_changed
+            || guarded
             || a.posed()
             || (space_changed && (a.background.is_some() || a.has_art()))
             || shape == Shape::Paragraph
             || a.decor.active()
             || shape.reads_paint_context(a, old, next);
-        let hit = (guarded
-            || escaping
-            || a.posed()
-            || a.click
-            || shape == Shape::Paragraph
-            || a.decor.radius != [0.; 4])
-            && (geometry_changed || old.is_none_or(|p| p.scale != next.scale));
+        let hit = port_changed
+            || (guarded
+                || escaping
+                || a.posed()
+                || a.click
+                || shape == Shape::Paragraph
+                || a.decor.radius != [0.; 4])
+                && (geometry_changed || old.is_none_or(|p| p.scale != next.scale));
         if let Some(outputs) = Outputs::changed(draw, hit) {
             self.invalidate_composition(k, e.depth(k), outputs);
         }
         let outer_clip_changed = old.is_none_or(|p| p.clip != clip);
         let frame_changed = old.is_none_or(|p| p.frame != f);
         let escape_clip_changed = old.is_none_or(|p| p.escape_clip != next.escape_clip);
+        let content_changed = old.is_none_or(|p| {
+            p.content_scroll != next.content_scroll || p.scrollport != next.scrollport
+        });
         if child_clip_changed
             || escape_clip_changed
             || color_changed
@@ -1795,7 +1839,8 @@ impl Layers {
             || frame_changed
         {
             for &child in e.owned(k) {
-                if escape_clip_changed
+                if (content_changed && e.slots[child].slot.is_none())
+                    || escape_clip_changed
                     || child_clip_changed
                     || inputs_changed
                     || (color_changed && e.attrs[child].color.is_none())
@@ -1804,6 +1849,11 @@ impl Layers {
                 {
                     self.enqueue(PaintContext, child, e);
                 }
+            }
+        } else if content_changed {
+            // A position-only update need not even inspect host-owned mounts.
+            for &child in e.children(k) {
+                self.enqueue(PaintContext, child, e);
             }
         }
     }

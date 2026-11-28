@@ -379,7 +379,8 @@ impl WindowApp {
         Ok(None)
     }
     fn input(&mut self, event: InputEvent) {
-        self.env.run(|env| self.display.dispatch(env, event));
+        self.env
+            .run(|env| self.display.dispatch(&self.owner, env, event));
         self.env.clear();
     }
     fn output_interval(&mut self, o: &wl_output::WlOutput) {

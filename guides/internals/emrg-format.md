@@ -187,8 +187,7 @@ endpoints accept pixels, content, fill and weighted fill in any pairing. `min` a
 keyframes and change policies. Other animated properties retain their existing
 shape-compatibility checks.
 
-Controlled-scroll attributes use new tags; legacy pixel-offset tags `38`/`39`
-retain their old encoding and are not reinterpreted as fractions:
+The retained reader uses the existing scroll tags. Axis enables are `7` (Y) and `8` (X). Legacy pixel offsets `38`/`39` retain their encoding; an explicit position on the same axis takes precedence in either field order:
 
 - `85`: `scroll_position_x`
 - `86`: `scroll_position_y`
@@ -197,8 +196,7 @@ retain their old encoding and are not reinterpreted as fractions:
 Position payloads are `0:u8 + fraction:f64be` (finite, in `[0, 1]`) or
 `1:u8 + declaration:u64be + target_node_id:u64be`. Zero target ID denotes an
 unresolved key. Semantic Elixir key terms never cross the wire. Declaration
-identity is independent of target-node resolution; native patch ingestion assigns
-mount-scoped per-axis proposal sequence IDs only when the declaration changes.
+identity is independent of target-node resolution. The retained tree consumes a changed proposal after placement, once per attachment and axis, against ordinary descendants. Neither a change of resolved ID alone nor a change of range repeats the jump. Position and event fields do not enable an axis. Fractions from input, epochs, echo history, hover and thumb geometry are runtime facts, not new wire fields.
 
 Tag `84` encodes `animate_change`, separate from the ordinary target attributes:
 

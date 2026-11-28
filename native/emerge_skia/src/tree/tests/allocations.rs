@@ -43,6 +43,60 @@ impl Counter {
         )
     }
 }
+fn scroll_projection(c: &Counter) {
+    use nearby::mounted;
+    let port = |v: f64| {
+        block(&[
+            px(1, 100.),
+            px(2, 60.),
+            vec![7, 1],
+            vec![8, 1],
+            vec![40, 1],
+            [86, 0].into_iter().chain(v.to_be_bytes()).collect(),
+            [13, 0].into_iter().chain(8f64.to_be_bytes()).collect(),
+        ])
+    };
+    let card = |id| {
+        node(
+            id,
+            4,
+            block(&[px(1, 180.), px(2, 40.), color([10, 20, 30]), vec![40, 1]]),
+            &[],
+        )
+    };
+    let mut r = Raster::default();
+    r.tree
+        .upload(&upload(&[
+            node(1, 3, port(0.), &[2, 3, 4]),
+            card(2),
+            mounted(card(3), &[(4, 5)]),
+            card(4),
+            card(5),
+        ]))
+        .unwrap();
+    c.zero(
+        "both scroll tracks, content mask, escaping panel and installed hit",
+        || {
+            r.settle(180., 170., 1.).unwrap();
+            r.install();
+            assert_eq!(r.hit_at(10., 20.), Some((2, 10., 20.)));
+        },
+    );
+    for (f, id, y) in [(1., 4, 0.), (0.5, 3, 10.), (0., 2, 20.)] {
+        let edit = set(1, 3, port(f));
+        c.zero(
+            "fitting scroll edit through packing and installed hit",
+            || {
+                r.tree.patch(&edit).unwrap();
+                r.settle(180., 170., 1.).unwrap();
+                r.install();
+                // The mounted panel covers card 4 at the bottom endpoint.
+                let id = if f == 1. { 5 } else { id };
+                assert_eq!(r.hit_at(10., 20.), Some((id, 10., y)));
+            },
+        );
+    }
+}
 fn nearby_bands(c: &Counter) {
     use nearby::mounted;
     let n = MAX_DEPTH as u64 + 1;
@@ -1245,6 +1299,7 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     alignment_zones(&c);
     nested_transforms(&c);
     nearby_bands(&c);
+    scroll_projection(&c);
     let mut split = Raster::default();
     split.tree.upload(&transforms::split_prose()).unwrap();
     c.zero(

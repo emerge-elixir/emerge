@@ -3,7 +3,7 @@ use crate::input::{self, InputEvent::*};
 use sctk::seat::{
     Capability, SeatHandler,
     keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers},
-    pointer::{CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec},
+    pointer::{AxisScroll, CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec},
 };
 use wayland_client::protocol::wl_pointer::WlPointer;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::{
@@ -185,6 +185,17 @@ impl KeyboardHandler for WindowApp {
             | (u8::from(m.logo) * input::MOD_META);
     }
 }
+// SCTK can report the same wheel step in three forms. Prefer value120,
+// then discrete steps; only a precise surface delta uses buffer mapping.
+fn axis(a: AxisScroll, line: f32, precise: f32) -> f32 {
+    if a.value120 != 0 {
+        -(a.value120 as f32 / 120.) * line
+    } else if a.discrete != 0 {
+        -(a.discrete as f32) * line
+    } else {
+        -precise
+    }
+}
 impl PointerHandler for WindowApp {
     fn pointer_frame(
         &mut self,
@@ -220,6 +231,18 @@ impl PointerHandler for WindowApp {
                 }
                 PointerEventKind::Leave { .. } => self.input(CursorEntered { entered: false }),
                 PointerEventKind::Motion { .. } => self.input(CursorPos { x, y }),
+                PointerEventKind::Axis {
+                    horizontal,
+                    vertical,
+                    ..
+                } => {
+                    let (px, py) = mapping.point((horizontal.absolute, vertical.absolute));
+                    let dx = axis(horizontal, self.display.line_pixels, px);
+                    let dy = axis(vertical, self.display.line_pixels, py);
+                    if dx.is_finite() && dy.is_finite() && (dx != 0. || dy != 0.) {
+                        self.input(CursorScroll { dx, dy, x, y });
+                    }
+                }
                 PointerEventKind::Press { button: 0x110, .. }
                 | PointerEventKind::Release { button: 0x110, .. } => self.input(CursorButton {
                     button: input::pointer::BUTTON_LEFT.into(),
@@ -240,3 +263,25 @@ impl PointerHandler for WindowApp {
 sctk::delegate_seat!(WindowApp);
 sctk::delegate_pointer!(WindowApp);
 sctk::delegate_keyboard!(WindowApp);
+
+#[test]
+fn wheel_units_choose_one_source_per_axis_and_precise_uses_the_installed_ratio() {
+    let mut sample = AxisScroll {
+        value120: 60,
+        discrete: 1,
+        absolute: 3.5,
+        ..Default::default()
+    };
+    let mapping = super::geometry::Geometry {
+        logical: (101, 75),
+        scale: super::geometry::Scale::Fractional(180),
+    }
+    .mapping()
+    .unwrap();
+    let precise = mapping.point((0., sample.absolute)).1;
+    assert_eq!(axis(sample, 45., precise), -22.5);
+    sample.value120 = 0;
+    assert_eq!(axis(sample, 45., precise), -45.);
+    sample.discrete = 0;
+    assert_eq!(axis(sample, 45., precise), -(3.5 * 113. / 75.) as f32);
+}

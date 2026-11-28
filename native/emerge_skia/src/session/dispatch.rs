@@ -113,27 +113,52 @@ pub(super) struct Dispatcher {
     pub observer: InputHandler,
     pub target: Option<LocalPid>,
     pressed: Option<Attachment>,
+    scroll: super::scroll::Driver,
 }
 #[derive(rustler::NifMap)]
 struct Position {
     x: f64,
     y: f64,
 }
+pub(super) fn deliver(env: Env, pid: LocalPid, epoch: u64, id: u64, kind: Atom, [x, y]: [f64; 2]) {
+    let event = (binary(env, &id.to_be_bytes()), kind, Position { x, y });
+    if epoch == 0 {
+        let _ = env.send(&pid, (input::emerge_skia_event(), event));
+    } else {
+        let _ = env.send(&pid, (super::emerge_skia_routed(), epoch, event));
+    }
+}
 impl Dispatcher {
-    pub fn after_draw(&mut self, scene: &Scene) {
+    pub fn after_draw(&mut self, owner: &super::Owner, scene: &Scene) {
+        self.scroll.installed(owner, scene);
         if self.pressed.is_some_and(|key| !scene.hits.has_target(key)) {
             self.pressed = None
         }
     }
     pub fn set_target(&mut self, target: Option<LocalPid>) {
         self.pressed = None;
+        self.scroll.cancel();
         self.target = target;
     }
-    pub fn dispatch(&mut self, env: Env, frame: Option<&super::Bundle>, event: InputEvent) {
-        let Some(pid) = self.target else { return };
-        if self.observer.accepts(&event) {
+    pub fn dispatch(
+        &mut self,
+        owner: &super::Owner,
+        env: Env,
+        frame: Option<&super::Bundle>,
+        event: InputEvent,
+    ) {
+        if let Some(pid) = self.target
+            && self.observer.accepts(&event)
+        {
             let _ = env.send(&pid, (input::emerge_skia_event(), &event));
         }
+        if let Some(f) = frame
+            && self.scroll.dispatch(owner, env, self.target, f, &event)
+        {
+            self.pressed = None;
+            return;
+        }
+        let Some(pid) = self.target else { return };
         match event {
             InputEvent::CursorButton {
                 ref button,
@@ -148,19 +173,14 @@ impl Dispatcher {
                 } else if let (Some(pressed), Some((key, id, x, y))) = (self.pressed.take(), hit)
                     && key == pressed
                 {
-                    let event = (
-                        binary(env, &id.to_be_bytes()),
+                    deliver(
+                        env,
+                        pid,
+                        frame.map_or(0, |f| f.route.epoch),
+                        id,
                         input::click(),
-                        Position { x, y },
+                        [x, y],
                     );
-                    match frame.map(|f| f.route.epoch).unwrap_or(0) {
-                        0 => {
-                            let _ = env.send(&pid, (input::emerge_skia_event(), event));
-                        }
-                        epoch => {
-                            let _ = env.send(&pid, (super::emerge_skia_routed(), epoch, event));
-                        }
-                    }
                 }
             }
             InputEvent::Focused { focused: false }

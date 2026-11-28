@@ -22,7 +22,7 @@ impl LayoutBehaviour for El {
             let e = node.elements;
             let [x, y] = [0, 1].map(|axis| e.alignment(child, axis));
             if Self::reads_placed_width(|| x) {
-                origin[0] += x.offset(area.width, cx.width_at(child, edge));
+                origin[0] += node.attrs().scroll.align(0, x, area.width, cx.width_at(child, edge));
             }
             if y != Alignment::Start {
                 let h = if e.attrs[child].rotation.mixes_axes() {
@@ -30,7 +30,7 @@ impl LayoutBehaviour for El {
                 } else {
                     edge.resolve_height(e, child, cx.child(child).h)
                 };
-                origin[1] += y.offset(area.height, h);
+                origin[1] += node.attrs().scroll.align(1, y, area.height, h);
             }
             cx.place(child, origin, edge);
         }

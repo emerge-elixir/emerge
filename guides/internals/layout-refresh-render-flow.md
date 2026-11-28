@@ -24,6 +24,8 @@ the [presenter](../../native/emerge_skia/src/session/presentation.rs) takes the
 newest eligible **completed image**. If B is ready and C is still drawing, B
 can be handed off; finishing C cannot change an already claimed B.
 
+A [scrollport](../../native/emerge_skia/src/tree/scroll.rs) projects a live fraction onto the overflow of its ordinary children's settled layout boxes. Target jumps read that unscrolled geometry after Place. Wheel, pan and thumb motion need only paint context and composition: content moves; the scroller, its chrome and its own mounted panels don't. The display interprets input against the installed regions and posts absolute, attachment-qualified positions to the tree actor; it never waits for those positions to be drawn. See [installed scrolling](events.md#retained-scroll-dispatch).
+
 A [Nearby mount](nearby-semantics.md) is an ownership edge, not an ordinary layout child. When packing a changed drawing or hit stream, the same layer traversal defers escaping panels and finishes all peer menus before their tooltips. A clean stream keeps its sealed buffer. No dedicated layout pass or render surface is needed for a layer.
 
 Binary headless installs on delivery. Wayland shm attaches only the winner;

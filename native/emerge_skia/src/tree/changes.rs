@@ -326,6 +326,22 @@ impl Layers {
         let next = &e.attrs[k];
         let depth = e.depth(k);
         let shape = e.slots[k].shape;
+        if old.scroll != next.scroll
+            || (next.scroll.port() && old.sizing.padding != next.sizing.padding)
+        {
+            if old.scroll.enabled != next.scroll.enabled {
+                self.enqueue(Pass::Place, k, e);
+            }
+            if !next.scroll.tracked() {
+                self.scroll.remove(k);
+            }
+            if old.scroll.enabled != next.scroll.enabled
+                || old.sizing.padding != next.sizing.padding
+            {
+                self.scroll.resize(k);
+            }
+            self.enqueue(Pass::PaintContext, k, e);
+        }
         let mut invalidate = |pass| self.enqueue(pass, k, e);
         if old.family != next.family
             || old.weight != next.weight

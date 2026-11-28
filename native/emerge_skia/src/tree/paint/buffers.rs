@@ -136,21 +136,26 @@ impl Packed<7> for super::Drawing {
         super::Drawing::clear(self)
     }
 }
-impl Packed<3> for super::Hits {
-    fn capacities(&self) -> [usize; 3] {
+impl Packed<4> for super::Hits {
+    fn capacities(&self) -> [usize; 4] {
         [
             self.items.capacity(),
             self.clips.capacity(),
             self.planes.0.capacity(),
+            self.scrolls.capacity(),
         ]
     }
-    fn reserve(&mut self, [items, clips, planes]: [usize; 3]) -> Result<(), String> {
+    fn reserve(&mut self, [items, clips, planes, scrolls]: [usize; 4]) -> Result<(), String> {
+        self.scrolls
+            .try_reserve(scrolls.saturating_sub(self.scrolls.len()))
+            .map_err(pool::capacity_error)?;
         pool::reserve(&mut self.planes.0, planes)?;
         pool::reserve(&mut self.items, items)?;
         self.clips.reserve(clips, Budget(0))
     }
     fn clear(&mut self) {
         self.items.clear();
+        self.scrolls.clear();
         self.clips.clear();
         self.planes.0.clear();
     }

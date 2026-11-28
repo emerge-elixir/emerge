@@ -15,6 +15,7 @@ mod queue;
 mod rotation;
 use rotation::Rotation;
 mod scale;
+pub(crate) mod scroll;
 mod shapes;
 mod text;
 mod wire;
@@ -35,7 +36,7 @@ use layers::{Layers, Pass};
     any(feature = "opengl", feature = "vulkan")
 ))]
 pub(crate) use paint::GeometryPainter;
-pub(crate) use paint::{Attachment, Raster, Scene};
+pub(crate) use paint::{Attachment, Raster, Scene, ScrollHit};
 use pool::{Budget, Pool, Span};
 use slotmap::{SecondaryMap, SlotMap, new_key_type};
 use std::{cell::Cell, collections::HashMap, ops::Range};
@@ -357,6 +358,7 @@ struct Attrs {
     rotation: Rotation,
     image_host_clip: bool,
     clip_nearby: bool,
+    scroll: scroll::Spec,
     opacity: Option<u8>,
     decor: decoration::Decor,
     font_gradient: decoration::Bytes,

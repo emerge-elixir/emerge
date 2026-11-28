@@ -111,6 +111,11 @@ impl Batch {
                 self.check_text_site(e, s.id)?;
             }
             if s.shape == Shape::El {
+                if self.declaration(e, s.id).1.scroll.port() && self.inline_text(e, s.id) {
+                    return Err(
+                        "scrollbars require a block container, not a paragraph continuation".into(),
+                    );
+                }
                 if self.declaration(e, s.id).1.has_art() && self.inline_text(e, s.id) {
                     return Err("file backgrounds require a block box, not a paragraph span".into());
                 }

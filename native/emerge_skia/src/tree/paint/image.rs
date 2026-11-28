@@ -117,8 +117,9 @@ impl Sample {
         let mut clip = if !leaf {
             sk(ctx.clip)
         } else if a.posed() {
-            let borrowed =
-                !own_clip && e.layout_parent(k).is_some_and(|p| e.attrs[p].clips_media());
+            let borrowed = !own_clip
+                && e.layout_parent(k)
+                    .is_some_and(|p| !e.attrs[p].scroll.port() && e.attrs[p].clips_media());
             sk(ctx.child_clip).with_outset(if borrowed || picture { bleed } else { pad })
         } else {
             sk(if picture { ctx.clip } else { ctx.child_clip })

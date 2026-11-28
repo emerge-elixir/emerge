@@ -8,6 +8,7 @@ pub(super) struct Branch {
     pub escape: Coords,
     pub depth: usize,
     pub group: u32,
+    pub wheel: u32, // enclosing installed scroll region, zero outside scroll content
 }
 #[derive(Clone, Copy)]
 struct Job {
@@ -15,6 +16,7 @@ struct Job {
     next: u32,
     escape: Coords,
     group: u32,
+    wheel: u32,
 }
 #[derive(Default)]
 pub(super) struct Bands {
@@ -46,6 +48,7 @@ impl Bands {
             next: 0,
             escape: b.escape,
             group: b.group,
+            wheel: b.wheel,
         });
         let link = self.jobs.len() as u32;
         let [head, tail] = &mut self.buckets[d];
@@ -75,6 +78,7 @@ impl Bands {
                 escape: job.escape,
                 depth: self.depth,
                 group: job.group,
+                wheel: job.wheel,
             },
             new_band,
         ))

@@ -68,7 +68,15 @@ fn lines(span: &[paragraph::Fragment]) -> impl Iterator<Item = (&[paragraph::Fra
     })
 }
 impl Output {
-    pub(super) fn inline(&mut self, e: &Elements, k: Key, l: &Layers, side: usize, scope: Scope) {
+    pub(super) fn inline(
+        &mut self,
+        e: &Elements,
+        k: Key,
+        l: &Layers,
+        side: usize,
+        scope: Scope,
+        wheel: u32,
+    ) {
         let ctx = l.paint[k];
         let parent = Space {
             plane: scope.plane,
@@ -142,6 +150,8 @@ impl Output {
                         if let Some(area) = rect.intersection(space.clip) {
                             let frame = l.paint[target].frame;
                             hits.items.push(Hit {
+                                kind: HitKind::Listener,
+                                wheel,
                                 scope: space.line_scope(outer, scope, mask),
                                 key: Attachment(target, e.slots[target].attachment),
                                 id: e.slots[target].id,

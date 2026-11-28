@@ -13,6 +13,7 @@ mod dispatch;
 mod frame;
 mod images;
 mod mailbox;
+mod scroll;
 mod stats;
 #[cfg(all(target_os = "linux", feature = "wayland"))]
 mod wayland;
@@ -64,6 +65,7 @@ struct Start {
     stats_enabled: bool,
     renderer_stats_log: bool,
     tree_headroom_percent: u16,
+    scroll_line_pixels: f32,
 }
 #[derive(Clone)]
 enum Pixels {
@@ -98,6 +100,8 @@ struct Display {
     toplevel: Option<wayland::Toplevel>,
     installed: Option<Installed>,
     input: Dispatcher,
+    #[cfg(all(target_os = "linux", feature = "wayland"))]
+    line_pixels: f32,
     stats: Option<stats::Samples>,
 }
 impl Display {
@@ -123,7 +127,7 @@ impl Display {
             self.installed.as_ref().map(|i| i.bundle.route.as_ref()),
             owner.lifecycle.id,
         );
-        self.input.after_draw(&bundle.scene);
+        self.input.after_draw(owner, &bundle.scene);
         if let (Some(stats), Some(t)) = (&mut self.stats, elapsed) {
             stats.submitted(t);
         }
@@ -138,9 +142,13 @@ impl Display {
         drop(old);
         owner.submitted(id, revision, now, cost)
     }
-    fn dispatch(&mut self, env: Env, event: input::InputEvent) {
-        self.input
-            .dispatch(env, self.installed.as_ref().map(|i| &i.bundle), event);
+    fn dispatch(&mut self, owner: &Owner, env: Env, event: input::InputEvent) {
+        self.input.dispatch(
+            owner,
+            env,
+            self.installed.as_ref().map(|i| &i.bundle),
+            event,
+        );
     }
 }
 struct BinarySink {
@@ -153,6 +161,7 @@ struct Owner {
     probes: probes::Probes,
     lifecycle: Lifecycle,
     admission: admission::Admission,
+    scroll: scroll::Inbox,
     loader: (
         Sender<crate::raster_assets::Loader>,
         Receiver<crate::raster_assets::Loader>,
@@ -371,6 +380,9 @@ fn start(caller: LocalPid, opts: Start) -> Result<ResourceArc<Session>, String> 
     if !valid_size((opts.width, opts.height)) {
         return Err("invalid raster output size".into());
     }
+    if !opts.scroll_line_pixels.is_finite() || opts.scroll_line_pixels <= 0. {
+        return Err("scroll_line_pixels must be finite and positive".into());
+    }
     let driver = Driver::select(&opts)?;
     // Interrupt a compositor that accepts a connection but never answers the
     // registry roundtrip. A startup deadline must not strand a worker thread.
@@ -384,6 +396,7 @@ fn start(caller: LocalPid, opts: Start) -> Result<ResourceArc<Session>, String> 
         probes: Default::default(),
         lifecycle: Lifecycle::default(),
         admission: admission::Admission::new(opts.tree_headroom_percent),
+        scroll: Default::default(),
         loader: bounded(1),
         configured_assets: Default::default(),
         capturing: Default::default(),
@@ -411,6 +424,8 @@ fn start(caller: LocalPid, opts: Start) -> Result<ResourceArc<Session>, String> 
         toplevel: None,
         installed: None,
         input: Default::default(),
+        #[cfg(all(target_os = "linux", feature = "wayland"))]
+        line_pixels: opts.scroll_line_pixels,
         stats: (opts.stats_enabled || opts.renderer_stats_log).then(stats::Samples::new),
     };
     if matches!(driver, Driver::Binary(_)) {

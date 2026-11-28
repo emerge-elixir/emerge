@@ -2,6 +2,14 @@
 
 The registry and event actor below describe the reference renderer. For retained binary headless and Wayland, see [frame installation](layout-refresh-render-flow.md#current-retained-path-binary-headless-and-wayland) and [Nearby clicks and blockers](nearby-semantics.md#paint-and-hits).
 
+## Retained scroll dispatch
+
+On binary headless and Wayland, each installed frame carries its scroll regions, the links to their enclosing scrollports, the inverse transforms and the callback route. A wheel component bubbles from the winning region to the first enclosing port that can move in that direction; it does not fall through to a covered sibling. A track press centers the thumb. A thumb drag preserves the grab point; a content drag selects a port after 8 device pixels of motion. A captured scroll consumes the click. A new installation rechecks capture and thumb hover, even with a stationary pointer.
+
+The [display driver](../../native/emerge_skia/src/session/scroll.rs) accumulates from the last installed or newer pending fraction. It posts an absolute receipt, wakes the tree actor, then sends at most one `%{x: float, y: float}` for each changed emitting port. Raw `:pointer_scroll` subscription is independent. The actor checks attachment, axis epoch and receipt before applying the update. A matching callback echo within five seconds is not a jump. Resize, application proposals and hover changes do not emit callbacks. A held or rejected handoff cannot replace the installed route. [Controller and installed-frame controls](../../plans/scrolling.md#verification).
+
+Wayland chooses one source per axis: use `value120 / 120` in preference to discrete steps, multiplying either by `scroll_line_pixels` (startup default `30.0`). With neither, convert the continuous surface delta by the installed buffer-to-surface ratio. Headless injection already supplies pixel deltas. This path does not implement keyboard reveal, inertia, editor scrolling or general gestures.
+
 ## Overview
 
 EmergeSkia keeps event state in the retained UI tree and dispatches input by

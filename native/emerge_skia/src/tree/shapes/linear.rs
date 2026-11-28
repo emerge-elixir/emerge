@@ -133,7 +133,7 @@ impl<const M: usize, const W: bool, const T: u8> Linear<M, W, T> {
     /// Only placement writes vary in order; paint and hit walk the declaration.
     fn place_zones(
         line: &[Key],
-        room: f32,
+        room: Option<f32>,
         spacing: MainSpacing,
         alignment: impl Fn(Key) -> Alignment,
         cx: &mut PlaceCx<'_>,
@@ -145,9 +145,15 @@ impl<const M: usize, const W: bool, const T: u8> Linear<M, W, T> {
         let zone = |c| if even { Start } else { alignment(c) };
         let gap = match spacing {
             MainSpacing::Fixed(gap) => scale::pixels(gap, cx.scale),
-            MainSpacing::Even => Self::even_gap(line, room, |c| resolve(c, cx).charge),
+            MainSpacing::Even => {
+                Self::even_gap(line, room.unwrap_or_default(), |c| resolve(c, cx).charge)
+            }
         };
-        let (mut start, mut center, mut end) = (Cursor::at(0.), Cursor::at(0.), Cursor::at(room));
+        let (mut start, mut center, mut end) = (
+            Cursor::at(0.),
+            Cursor::at(0.),
+            Cursor::at(room.unwrap_or_default()),
+        );
         let mut widest = 0f32;
         let mut place = |c, z, cursor: &mut Cursor, cx: &mut PlaceCx<'_>| {
             let slot = resolve(c, cx);
@@ -161,10 +167,24 @@ impl<const M: usize, const W: bool, const T: u8> Linear<M, W, T> {
                 Start => place(c, Start, &mut start, cx),
                 End => ends = &line[..=i],
                 Center => {
-                    Self::advance(&mut center, resolve(c, cx).charge, gap, Center, even);
+                    if room.is_some() {
+                        Self::advance(&mut center, resolve(c, cx).charge, gap, Center, even);
+                    }
                     centers = &line[..=i];
                 }
             }
+        }
+        if room.is_none() {
+            // A scrollable Column has no viewport-anchored center or footer.
+            // Like the reference, each trailing zone starts at the top group's
+            // actual end. Interleaved zones still paint in declaration order.
+            for (members, z) in [(ends, End), (centers, Center)] {
+                let mut cursor = Cursor::at(start.edge);
+                for &c in members.iter().filter(|&&c| zone(c) == z) {
+                    place(c, Start, &mut cursor, cx);
+                }
+            }
+            return widest;
         }
         for &c in ends.iter().rev().filter(|&&c| zone(c) == End) {
             place(c, End, &mut end, cx);
@@ -444,6 +464,24 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
             } else {
                 cross_room
             };
+            // If the end zone were anchored to an overflowing viewport, it
+            // would overlap earlier siblings or start before reachable content.
+            let scroll = node.attrs().scroll;
+            let main_room = if M == Y && !W && scroll.port() && spacing != MainSpacing::Even {
+                None
+            } else if scroll.enabled[M]
+                && spacing != MainSpacing::Even
+                && line
+                    .iter()
+                    .any(|&c| e.attrs[c].align[M].unwrap_or_default() != Alignment::Start)
+            {
+                Some(main_room.max(
+                    line.iter().map(|&c| resolved(c, cx).advance).sum::<f32>()
+                        + gap[M] * line.len().saturating_sub(1) as f32,
+                ))
+            } else {
+                Some(main_room)
+            };
             let occupied_cross = Self::place_zones(
                 line,
                 main_room,
@@ -452,7 +490,8 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
                 cx,
                 resolved,
                 |cx, c, pos, across, edge| {
-                    let offset = Self::axes([pos, cross + align(c).offset(interval, across)]);
+                    let offset =
+                        Self::axes([pos, cross + scroll.align(1 - M, align(c), interval, across)]);
                     cx.place(c, [area.x + offset[0], area.y + offset[1]], edge);
                 },
             );

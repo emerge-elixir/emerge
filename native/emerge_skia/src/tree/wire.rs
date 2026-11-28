@@ -239,6 +239,28 @@ fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
                 }
             }
             tag @ (5 | 6) => a.align[usize::from(tag - 5)] = Some(r.alignment("alignment")?),
+            tag @ (7 | 8) => a.scroll.enabled[usize::from(tag == 7)] = r.flag()?,
+            tag @ (38 | 39) => {
+                let p = scroll::Proposal::Pixels(r.signed()?);
+                a.scroll.position[usize::from(tag - 38)].get_or_insert(p);
+            }
+            tag @ (85 | 86) => {
+                a.scroll.position[usize::from(tag - 85)] = Some(match r.byte()? {
+                    0 => {
+                        let v = r.signed()?;
+                        if !(0.0..=1.0).contains(&v) {
+                            return Err("invalid scroll fraction".into());
+                        }
+                        scroll::Proposal::Fraction(v)
+                    }
+                    1 => scroll::Proposal::Target {
+                        token: r.id()?,
+                        id: r.id()?,
+                    },
+                    v => return Err(format!("invalid scroll position variant {v}")),
+                });
+            }
+            87 => a.scroll.emit = r.flag()?,
             30 => a.text_align = Some(r.alignment("text alignment")?),
             12 => match r.byte()? {
                 0 if !a.has_art() || shape == Shape::Image => {
@@ -354,6 +376,9 @@ fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
     }
     if !r.0.is_empty() {
         return Err("trailing attribute bytes".into());
+    }
+    if a.scroll.port() && matches!(shape, Shape::Text | Shape::Empty | Shape::Image) {
+        return Err("scrollbars require a block container".into());
     }
     a.pose_declared = layout_angle || paint_angle || paint_scale;
     if layout_angle && paint_angle || a.layout_scale.is_some() && paint_scale {

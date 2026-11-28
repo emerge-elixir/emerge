@@ -49,7 +49,7 @@ impl Envelope {
         let _ = env.send_and_clear(&pid, |e| {
             let result = match self.cmd {
                 Command::Input(event) => {
-                    s.dispatch(e, event);
+                    s.dispatch(owner, e, event);
                     atoms::ok().encode(e)
                 }
                 Command::Mask(mask) => {
