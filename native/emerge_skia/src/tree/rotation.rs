@@ -122,18 +122,7 @@ impl Subtree {
             fills_width: b.width.weight().is_some(),
             height_reader: kids.height_reader || shape.projects_height(a) || packed_share,
         };
-        self.reads_anchor = [
-            reads_width || (shape == Shape::Text && b.width == Length::Auto),
-            self.own.height_reader && share,
-        ];
-        if self.mount_needs[0]
-            && (shape.packs_width(b.width) || (shape == Shape::Image && b.width_from_height()))
-        {
-            return Err("Nearby width needs an anchor known before Place".into());
-        }
-        if self.mount_needs[1] && !matches!(b.height, Length::Px(_)) {
-            return Err("Nearby height-dependent width needs a definite anchor height".into());
-        }
+        self.reads_anchor_height = self.own.height_reader && share;
         Ok(self)
     }
 }

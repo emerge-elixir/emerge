@@ -188,6 +188,140 @@ fn nearby_bands(c: &Counter) {
     assert!(r.pixels() == installed);
     assert_eq!(r.hit_at(10., 10.).unwrap().0, n);
 }
+fn nearby_layout(c: &Counter) {
+    use nearby::mounted;
+    let mut r = Raster::default();
+    let mut live = Tree::for_session(0);
+    let mut publisher = Publisher::new(0);
+    let panel = node(4, 4, nearby::chip(12., 10., [0, 255, 0], true), &[]);
+    let initial = upload(&[
+        node(1, 3, block(&[px(1, 70.)]), &[2, 4]),
+        node(2, 4, block(&[px(1, 20.), px(2, 20.)]), &[3]),
+        node(3, 6, block(&[]), &[]),
+        panel,
+    ]);
+    let attach = patch(
+        1,
+        1,
+        &[edges(1, 3, &[2]), mounted(edges(2, 4, &[3]), &[(3, 4)])],
+    );
+    for (wire, x, y) in [(&initial, 2., 22.), (&attach, 22., 2.)] {
+        r.tree.patch(wire).unwrap();
+        publisher.apply(wire, 1.).unwrap().install(&mut live);
+        c.zero(
+            "first mount, new rank storage with unchanged key count",
+            || {
+                r.settle(180., 170., 1.).unwrap();
+                r.install();
+                assert_eq!(r.hit_at(x, y), Some((4, 2., 2.)));
+                live.refresh(180., 170., 1.).unwrap();
+            },
+        );
+        let f = live.seal().unwrap();
+        assert_eq!(f.hits.target_at(f.viewport, x, y).unwrap().1, 4);
+    }
+    let mut r = Raster::default();
+    let children = (3..1027).collect::<Vec<_>>();
+    let full = upload(
+        &[
+            vec![
+                mounted(node(1, 4, block(&[]), &[]), &[(6, 2)]),
+                node(2, 3, block(&[]), &children),
+            ],
+            children
+                .iter()
+                .map(|&n| node(n, 4, block(&[px(1, 10.), px(2, 1.), vec![40, 1]]), &[]))
+                .collect(),
+        ]
+        .concat(),
+    );
+    r.tree.upload(&full).unwrap();
+    c.zero(
+        "one pending key per ordinary descendant under a single mount",
+        || {
+            r.settle(180., 170., 1.).unwrap();
+            r.install();
+            assert_eq!(r.hit_at(1., 0.5), Some((3, 1., 0.5)));
+        },
+    );
+    let mut r = Raster::default();
+    let art = |n| {
+        node(
+            n,
+            4,
+            block(&[vec![1, 0], px(2, 12.), vec![40, 1], color([0, 255, 0])]),
+            &[],
+        )
+    };
+    let header = |w| prose::host(w, 1);
+    r.tree
+        .upload(&upload(&[
+            node(1, 7, header(110.), &[2, 5]),
+            mounted(node(2, 4, prose::wrapper(100), &[3]), &[(1, 4), (4, 7)]),
+            node(3, 5, text("AAA BBB C DDDD EEEE F"), &[]),
+            art(4),
+            mounted(
+                node(5, 4, block(&[px(1, 12.), px(2, 12.), vec![5, 0]]), &[]),
+                &[(6, 6)],
+            ),
+            art(6),
+            art(7),
+        ]))
+        .unwrap();
+    for (w, i) in [110., 60., 110.].into_iter().zip(0..) {
+        let edit = set(1, 7, header(w));
+        c.zero(
+            "first reserved inline draw, behind and float, rewrap and installed panel hit",
+            || {
+                if i != 0 {
+                    r.tree.patch(&edit).unwrap();
+                }
+                r.settle(180., 170., 1.).unwrap();
+                r.install();
+                let f = bounds(&r, 7);
+                let (id, x, y) = r.hit_at(f.x + f.width - 2., f.y + 2.).unwrap();
+                assert_eq!((id, y), (7, 2.));
+                assert!((x - f64::from(f.width - 2.)).abs() < 0.001);
+                assert_eq!(r.tree.output.mounted_visits, [3, 3]);
+            },
+        );
+    }
+}
+// No lexical words at all: the inline anchor may have zero area, but
+// it and a float can still export overlapping panels in declaration order.
+fn empty_exporters(c: &Counter) {
+    use nearby::{chip, mounted};
+    let full = upload(&[
+        node(1, 7, prose::host(72., 0), &[2, 4]),
+        mounted(node(2, 4, block(&[]), &[3]), &[(6, 5)]),
+        node(3, 5, text(""), &[]),
+        mounted(
+            node(4, 4, block(&[px(1, 10.), px(2, 8.), vec![5, 0]]), &[]),
+            &[(6, 6)],
+        ),
+        node(5, 4, chip(60., 12., [255, 0, 0], true), &[]),
+        node(6, 4, chip(60., 12., [0, 0, 255], true), &[]),
+    ]);
+    let mut r = Raster::default();
+    let mut live = Tree::for_session(0);
+    Publisher::new(0)
+        .apply(&full, 1.)
+        .unwrap()
+        .install(&mut live);
+    r.tree.upload(&full).unwrap();
+    c.zero(
+        "float and empty inline releases in both first reserved workspaces",
+        || {
+            r.settle(180., 170., 1.).unwrap();
+            r.install();
+            assert_eq!(r.hit_at(30., 5.).unwrap().0, 6);
+            live.refresh(180., 170., 1.).unwrap();
+            assert_eq!(live.output.mounted_visits, [2, 2]);
+        },
+    );
+    let frame = live.seal().unwrap();
+    assert_eq!(frame.hits.target_at(frame.viewport, 30., 5.).unwrap().1, 6);
+}
 fn nested_transforms(c: &Counter) {
     let mut r = Raster::default();
     let host = |angle| block(&[px(1, 100.), px(2, 120.), number(79, angle)]);
@@ -1299,6 +1433,8 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     alignment_zones(&c);
     nested_transforms(&c);
     nearby_bands(&c);
+    nearby_layout(&c);
+    empty_exporters(&c);
     scroll_projection(&c);
     let mut split = Raster::default();
     split.tree.upload(&transforms::split_prose()).unwrap();

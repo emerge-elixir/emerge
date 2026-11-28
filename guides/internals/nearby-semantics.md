@@ -14,7 +14,9 @@ The anchor is the host's **local border box**, not its padded content box or its
 
 An offer is not a compulsory size. A fixed panel can overflow. For a host at `(10,20)` sized `80×40`, a centered `20×10` panel in `below` starts at `(40,60)`, regardless of host padding.
 
-A paragraph can be a block anchor, but a nonfloating inline continuation is not an anchor. A width-reading mount needs an anchor width available in Flow, not a packed or height-projected width first finalized in Place. A panel whose width computation needs the offered host height requires a proved pixel-height anchor; a shared-flow document paragraph that can outgrow that height doesn't qualify. The proof checks changed edges and ancestor summaries before acceptance. It does not reflow a paragraph twice.
+In `paragraph(attrs, [el([Nearby.below(menu)], text(phrase))])`, the `el` is one anchor even when the phrase wraps. A fill-width menu uses the left, bottom and width of the box enclosing **all aligned continuations**. The wrapper's own background and click regions still follow the individual lines; uncovered gaps aren't wrapper hits. Bare `text/1` has no attribute list. A raw mount on the inline Text instead of its El owner is not supported.
+
+The [scheduler](../../plans/nearby-layout-scheduling.md) finishes Place for the host's rank before starting layout for its mounts. An Image sized from its allocated height and a content-width `wrapped_column` therefore offer their placed width. A side panel whose local height determines its turned width reads the host's actual height, including shared document flow. A mount does not reopen host layout or require a second paragraph solve.
 
 ## Paint and hits
 

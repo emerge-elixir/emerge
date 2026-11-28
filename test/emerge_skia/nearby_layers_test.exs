@@ -95,6 +95,140 @@ defmodule EmergeSkia.NearbyLayersTest do
     end
   end
 
+  # Geometry oracle from the same ordinary declaration without a panel.
+  defp phrase_id(%{key: :phrase, id: id}), do: id
+  defp phrase_id(node), do: Enum.find_value(node.children, &phrase_id/1)
+
+  defp phrase_box(t, {w, h}) do
+    {wire, _, tree} = Emerge.Engine.encode_full(Emerge.Engine.diff_state_new(), t)
+    id = phrase_id(tree)
+    tree = EmergeSkia.Native.tree_new()
+    assert {:ok, _} = EmergeSkia.Native.tree_upload(tree, wire)
+    assert {:ok, frames} = EmergeSkia.Native.tree_layout(tree, w * 1.0, h * 1.0, 1.0)
+
+    Enum.find_value(frames, fn {k, x, y, w, h} ->
+      if Emerge.Engine.NodeId.decode(k) == id, do: {x, y, w, h}
+    end)
+  end
+
+  defp sample(pixels, width, x, y), do: binary_part(pixels, 4 * (width * trunc(y) + trunc(x)), 4)
+
+  defp export(t, {w, h}),
+    do: EmergeSkia.TreeRenderer.render_to_pixels(t, [otp_app: :emerge, width: w, height: h], 5000)
+
+  test "the menu spans all aligned lines; an uncovered continuation gap still hits the paper" do
+    size = {160, 128}
+
+    scene = fn w, mounted ->
+      menu =
+        el(
+          [width(fill()), height(px(6)), Background.color(:green), Event.on_click(:menu)],
+          none()
+        )
+
+      mounts = if mounted, do: [Nearby.below(menu)], else: []
+
+      span =
+        el(
+          [key(:phrase), Background.color(:blue), Event.on_click(:phrase) | mounts],
+          text("AA BBB CC DDDDD E F")
+        )
+
+      el(
+        [width(fill()), height(fill()), Background.color(:white), Event.on_click(:paper)],
+        paragraph(
+          [
+            width(px(w)),
+            Font.size(12),
+            Font.center(),
+            Font.family(:monospace),
+            Font.color(color_rgba(0, 0, 0, 0))
+          ],
+          [el([key(:prefix)], text("X ")), span, el([key(:suffix)], text(" ZZZZZ"))]
+        )
+      )
+    end
+
+    {v, r} = Headless.mount(size, fn -> scene.(150, true) end, [:pointer_button])
+
+    for {w, i} <- Enum.with_index([150, 48, 150]) do
+      if i > 0, do: send(v, {:scene, fn -> scene.(w, true) end})
+      frame = Headless.pixels()
+      assert {:ok, ^frame} = EmergeSkia.render_to_pixels(r)
+      assert frame == export(scene.(w, true), size)
+      twin = scene.(w, false)
+      {x, y, width, h} = phrase_box(twin, size)
+      assert sample(frame, 160, x + 2, y + h + 2) == <<0, 255, 0, 255>>
+      assert sample(frame, 160, x + width - 2, y + h + 2) == <<0, 255, 0, 255>>
+      BoxAssertions.click(r, {x + 2.0, y + h + 2.0}, :menu, {2.0, 2.0})
+
+      if w == 48 do
+        assert h >= 42
+        plain = export(twin, size)
+
+        {gx, gy} =
+          Enum.find_value(ceil(y + 1)..floor(y + h - 1), fn row ->
+            Enum.find_value(ceil(x + 1)..floor(x + width - 1), fn col ->
+              if sample(plain, 160, col, row) == <<255, 255, 255, 255>>,
+                do: {col + 0.5, row + 0.5}
+            end)
+          end)
+
+        BoxAssertions.click(r, {gx, gy}, :paper, {gx, gy})
+      end
+    end
+  end
+
+  test "the scrolled inline escape keeps its owner's inverse; the port guard can be added and removed" do
+    size = {120, 100}
+
+    scene = fn guard, mounted ->
+      menu =
+        el(
+          [width(fill()), height(px(32)), Background.color(:green), Event.on_click(:menu)],
+          none()
+        )
+
+      mounts = if mounted, do: [Nearby.above(menu)], else: []
+      span = el([key(:phrase), Transform.rotate(180), Transform.move_x(8) | mounts], text("AAA"))
+      port = [width(px(100)), height(px(40)), scrollbar_y(), scroll_y(0.5)]
+
+      content =
+        column([width(px(100)), height(px(80))], [
+          el([height(px(24))], none()),
+          paragraph([width(fill()), Font.size(16)], [span])
+        ])
+
+      el(
+        [width(fill()), height(fill()), Background.color(:yellow), Event.on_click(:paper)],
+        el(if(guard, do: [clip_nearby() | port], else: port), content)
+      )
+    end
+
+    {x, y, w, h} = phrase_box(scene.(false, false), size)
+    point = {x + 8 + w - 3, y - 20 + h + 24}
+    assert elem(point, 1) > 40
+    {v, r} = Headless.mount(size, fn -> scene.(false, true) end, [:pointer_button])
+
+    for {clip, i} <- Enum.with_index([false, true, false]) do
+      if i > 0, do: send(v, {:scene, fn -> scene.(clip, true) end})
+      frame = Headless.pixels()
+      assert {:ok, ^frame} = EmergeSkia.render_to_pixels(r)
+      assert frame == export(scene.(clip, true), size)
+
+      if clip do
+        assert sample(frame, 120, elem(point, 0), elem(point, 1)) == <<255, 255, 0, 255>>
+        BoxAssertions.click(r, point, :paper, point)
+      else
+        assert sample(frame, 120, elem(point, 0), elem(point, 1)) == <<0, 255, 0, 255>>
+        for phase <- [:press, :release], do: BoxAssertions.button(r, phase, point)
+        assert_receive {:application, {:menu, %{x: lx, y: ly}}}
+        assert_in_delta lx, 3, 0.001
+        assert_in_delta ly, 8, 0.001
+      end
+    end
+  end
+
   defp moving(site) do
     kept =
       el(

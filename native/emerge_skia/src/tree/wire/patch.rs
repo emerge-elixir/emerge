@@ -358,6 +358,10 @@ impl Tree {
             0
         };
         let words = d.words;
+        self.layers.reserve_ranks(
+            self.elements.slots.capacity(),
+            self.budget.capacity(tree.mounts),
+        )?;
         self.layers.scroll.reserve(d.scrolls)?;
         self.output
             .reserve_scrolls(d.scrolls, d.live, words, self.budget)?;
@@ -396,7 +400,7 @@ impl Tree {
                 + 2 * d.groups
                 + if d.groups > 0 { 2 * words } else { 0 }
                 + if d.rules > 0 { 2 * d.texts } else { 0 },
-            d.groups + tree.mounts + d.scrolls,
+            d.groups + 3 * tree.mounts + d.scrolls,
             self.budget,
         )?;
         b.prepare_domains(
@@ -411,9 +415,12 @@ impl Tree {
         let e = &mut self.elements;
         let changed_site = b.entries.iter().any(|s| {
             s.attached
-                && !s.inserted
-                && e.live(s.id)
-                    .is_some_and(|k| e.slots[k].parent.map(|p| e.slots[p].id) != s.parent)
+                && e.ids.get(&s.id).is_some_and(|&k| {
+                    let m = &e.slots[k];
+                    s.inserted
+                        || m.parent.map(|p| e.slots[p].id) != s.parent
+                        || m.slot.is_some() != s.slot.is_some()
+                })
         });
         if changed_site {
             e.topology += 1;
@@ -485,7 +492,6 @@ impl Tree {
                 m.change.layout_before.get_or_insert(old);
             }
             m.stats = s.stats;
-            m.depth.set((e.topology, s.depth));
             if moved || readers_changed {
                 e.touch(k);
             }

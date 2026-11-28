@@ -51,7 +51,23 @@ fn malformed_mounts_and_over_budget_bands_leave_both_accepted_trees_intact() {
     );
     let mut short = patch(1, 1, &[mounted(edges(1, 4, &[]), &[(6, 2)])]);
     short.pop();
+    // A cycle in a panel's ordinary inputs is still a cycle. The mount
+    // comes after its host; it doesn't change the proof within the panel.
+    let circular = patch(
+        1,
+        1,
+        &[
+            mounted(edges(1, 4, &[]), &[(6, 2)]),
+            node(2, 3, block(&[vec![1, 1], px(2, 60.)]), &[3, 5]),
+            node(3, 7, block(&[vec![1, 0]]), &[4]),
+            node(4, 5, text("AAA BBB CC"), &[]),
+            node(5, 14, block(&[vec![1, 1], vec![2, 0]]), &[6, 7]),
+            node(6, 4, chip(30., 21., [1; 3], false), &[]),
+            node(7, 4, chip(30., 21., [1; 3], false), &[]),
+        ],
+    );
     for (bad, why) in [
+        (circular, "Column share depends on that same width"),
         (
             patch(1, 1, &[mounted(edges(1, 4, &[]), &[(255, 2)])]),
             "invalid Nearby slot 255",
@@ -89,29 +105,39 @@ fn malformed_mounts_and_over_budget_bands_leave_both_accepted_trees_intact() {
 }
 
 #[test]
-fn late_anchor_proof_follows_attrs_only_edits_and_closed_branch_moves() {
-    let fill = block(&[vec![1, 0], px(2, 10.)]);
-    let turn = block(&[px(1, 20.), vec![2, 0], number(79, 90.)]);
+fn settled_anchors_follow_attrs_only_edits_and_closed_branch_moves() {
+    let fill = block(&[vec![1, 0], px(2, 10.), vec![40, 1], color([2, 3, 4])]);
+    let turn = block(&[
+        px(1, 20.),
+        vec![2, 0],
+        number(79, 90.),
+        vec![40, 1],
+        color([2, 3, 4]),
+    ]);
     let fixed = || block(&[px(1, 20.), px(2, 10.)]);
     let paragraph = || node(4, 7, fixed(), &[]);
     let head = |s, attrs| mounted(node(1, s, attrs, &[]), &[(6, 2)]);
-    for (start, bad, why) in [
+    // Expected occupied panel [x, y, w, h]; None is the raw Text negative.
+    for (start, edit, panel, expected) in [
         // The panel alone changes; its host isn't named by the patch.
         (
             upload(&[head(14, block(&[])), node(2, 4, fixed(), &[])]),
             set(2, 4, fill.clone()),
-            "width needs an anchor known before Place",
+            2,
+            Some([0., 0., 0., 10.]),
         ),
         (
             upload(&[head(4, block(&[])), node(2, 4, fixed(), &[])]),
             set(2, 4, turn.clone()),
-            "height-dependent width needs a definite anchor height",
+            2,
+            Some([0., 0., 0., 20.]),
         ),
         // The host alone changes and its panel is a kept declaration.
         (
             upload(&[head(14, fixed()), node(2, 4, fill, &[])]),
             set(1, 14, block(&[])),
-            "width needs an anchor known before Place",
+            2,
+            Some([0., 0., 0., 10.]),
         ),
         // Float -> paragraph continuation, and moving a closed El -> Text
         // branch into a paragraph. Neither edit names the panel.
@@ -123,7 +149,8 @@ fn late_anchor_proof_follows_attrs_only_edits_and_closed_branch_moves() {
                 node(5, 4, fixed(), &[]),
             ]),
             set(2, 4, block(&[])),
-            "not a paragraph continuation",
+            5,
+            Some([0., -10., 20., 10.]),
         ),
         (
             upload(&[
@@ -134,7 +161,20 @@ fn late_anchor_proof_follows_attrs_only_edits_and_closed_branch_moves() {
                 paragraph(),
             ]),
             patch(1, 1, &[edges(1, 1, &[4]), edges(4, 7, &[2])]),
-            "not a paragraph continuation",
+            5,
+            None,
+        ),
+        (
+            upload(&[
+                node(1, 1, fixed(), &[2, 4]),
+                mounted(node(2, 4, fixed(), &[3]), &[(2, 5)]),
+                node(3, 5, text("story"), &[]),
+                node(5, 4, fixed(), &[]),
+                paragraph(),
+            ]),
+            patch(1, 1, &[edges(1, 1, &[4]), edges(4, 7, &[2])]),
+            5,
+            Some([0., -10., 20., 10.]),
         ),
         // In shared document flow a declared paragraph can grow with lines.
         (
@@ -144,7 +184,8 @@ fn late_anchor_proof_follows_attrs_only_edits_and_closed_branch_moves() {
                 node(3, 4, fixed(), &[]),
             ]),
             set(3, 4, turn),
-            "before document reflow",
+            3,
+            Some([0., 0., 10., 20.]),
         ),
     ] {
         let mut r = Raster::default();
@@ -153,13 +194,32 @@ fn late_anchor_proof_follows_attrs_only_edits_and_closed_branch_moves() {
         r.tree.upload(&start).unwrap();
         w.apply(&start, 1.).unwrap().install(&mut live);
         let before = draw(&mut r).to_vec();
-        let a = r.tree.patch(&bad).unwrap_err();
-        assert!(a.contains(why), "{a}, expected {why}");
-        let a = w.apply(&bad, 1.).err().unwrap();
-        assert!(a.contains(why), "{a}, expected {why}");
-        assert_eq!(r.tree.encode(), start);
-        assert_eq!(live.encode(), start);
-        assert!(draw(&mut r) == before);
+        let Some(expected) = expected else {
+            let a = r.tree.patch(&edit).unwrap_err();
+            assert!(a.contains("not a paragraph continuation"), "{a}");
+            assert_eq!(w.apply(&edit, 1.).err(), Some(a));
+            assert_eq!(r.tree.encode(), start);
+            assert_eq!(live.encode(), start);
+            assert!(draw(&mut r) == before);
+            continue;
+        };
+        r.tree.patch(&edit).unwrap();
+        w.apply(&edit, 1.).unwrap().install(&mut live);
+        draw(&mut r);
+        let f = bounds(&r, panel);
+        assert_eq!([f.x, f.y, f.width, f.height], expected);
+        live.refresh(180., 170., 1.).unwrap();
+        let scene = live.seal().unwrap();
+        assert!(r.pixels() == scene.rasterize().unwrap());
+        if panel == 3 {
+            assert_eq!(pixel(&r, 4, 6), [2, 3, 4, 255]);
+            assert_eq!(r.hit_at(4., 6.).unwrap().0, panel);
+            assert_eq!(
+                scene.hits.target_at(scene.viewport, 4., 6.).unwrap().1,
+                panel
+            );
+        }
+        check_fresh(&r);
     }
 }
 

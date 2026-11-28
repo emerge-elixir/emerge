@@ -44,7 +44,42 @@ pub(super) struct PaintContext {
     pub zoom: f32, // cumulative absolute uniform paint scale, independent of layout scale
     pub text_align: Alignment,
 }
+impl Branch {
+    fn pose(
+        &mut self,
+        planes: &mut Planes,
+        parent: Coords,
+        local: u32,
+        a: &Attrs,
+        ctx: PaintContext,
+        side: usize,
+    ) -> Option<()> {
+        if a.posed() {
+            self.escape.plane = if self.escape == parent && ctx.boundary == ctx.escape_boundary {
+                local
+            } else {
+                planes.branch(
+                    self.escape.plane,
+                    self.escape.mask,
+                    a,
+                    PaintContext {
+                        boundary: ctx.escape_boundary,
+                        ..ctx
+                    },
+                    side == 1,
+                )?
+            };
+        }
+        Some(())
+    }
+}
 impl PaintContext {
+    fn inner_guard(self, a: &Attrs, rounded: Option<Rounded>) -> Rounded {
+        rounded.unwrap_or_else(|| Rounded {
+            rect: a.decor.inner_rect(self.frame, self.scale),
+            radii: [0.; 4],
+        })
+    }
     fn box_clip(self, shape: Shape) -> Rect {
         let clip = if shape == Shape::Image {
             self.child_clip
@@ -114,11 +149,19 @@ struct Hit {
     origin: [f32; 2],
     scale: f32,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum Outputs {
     Draw,
     Hit,
+    #[default]
     Both,
+}
+impl std::ops::BitOrAssign for Outputs {
+    fn bitor_assign(&mut self, rhs: Self) {
+        if *self != rhs {
+            *self = Self::Both;
+        }
+    }
 }
 impl Outputs {
     pub fn changed(draw: bool, hit: bool) -> Option<Self> {
@@ -441,6 +484,8 @@ pub(super) struct Output {
     installed: [Option<(Key, u64)>; 2],
     pending: [Option<(Key, u64)>; 2],
     dirty: [bool; 2],
+    #[cfg(test)]
+    pub(super) mounted_visits: [usize; 2],
 }
 #[derive(Clone, Copy)]
 enum Visit {
@@ -451,7 +496,15 @@ enum Visit {
     Leaf {
         bleed: u8,
     },
-    Inline(u32),
+    Inline(inline::Span, Branch),
+    Ink(inline::Span, u32),
+    Float {
+        rounded_parent: bool,
+        branch: Branch,
+        release: usize,
+    },
+    EndFloat(usize, Option<bands::Chain>),
+    ReleaseFloat(bands::Chain),
     Chrome,
     Border,
     Opacity(usize),
@@ -542,6 +595,10 @@ impl Output {
         }
     }
     pub fn collect(&mut self, e: &Elements, root: Option<Key>, layers: &Layers) {
+        #[cfg(test)]
+        {
+            self.mounted_visits = [0; 2];
+        }
         for side in 0..2 {
             let stamp = root.map(|k| (k, layers.parts[k].ports[side].revision));
             if self.pending[side] == stamp {
@@ -617,8 +674,38 @@ impl Output {
                         self.chrome(e, k, layers, side, scope);
                         continue;
                     }
-                    Visit::Inline(wheel) => {
-                        self.inline(e, k, layers, side, scope, wheel);
+                    Visit::Inline(span, branch) => {
+                        self.inline_owner(e, k, layers, side, scope, (span, branch));
+                        continue;
+                    }
+                    Visit::Ink(span, wheel) => {
+                        self.inline_ink(
+                            e,
+                            k,
+                            layers,
+                            side,
+                            scope,
+                            (span, wheel, inline::Part::Content),
+                        );
+                        continue;
+                    }
+                    Visit::Float {
+                        rounded_parent,
+                        branch,
+                        release,
+                    } => {
+                        let enclosing = self.bands.begin_float();
+                        self.stack
+                            .push((k, Visit::EndFloat(release, enclosing), scope));
+                        (rounded_parent, branch)
+                    }
+                    Visit::EndFloat(release, enclosing) => {
+                        self.stack[release].1 =
+                            Visit::ReleaseFloat(self.bands.end_float(enclosing));
+                        continue;
+                    }
+                    Visit::ReleaseFloat(chain) => {
+                        self.bands.release_float(chain);
                         continue;
                     }
                     Visit::Border => {
@@ -647,6 +734,10 @@ impl Output {
                 if !p.ports[side].nonempty {
                     continue;
                 }
+                #[cfg(test)]
+                if e.slots[k].slot.is_some() {
+                    self.mounted_visits[side] += 1;
+                }
                 let ctx = layers.paint[k];
                 let a = &e.attrs[k];
                 let decor = a.decor;
@@ -670,28 +761,22 @@ impl Output {
                 let scope = Scope { plane: id, ..scope };
                 let plane = planes.get(id);
                 let exports = p.ports[side].exports;
-                if exports && a.posed() {
-                    let b = branch.escape;
-                    branch.escape.plane = if b.plane == parent
-                        && b.mask == stop
-                        && ctx.boundary == ctx.escape_boundary
-                    {
-                        id
-                    } else {
-                        let Some(id) = planes.branch(
-                            b.plane,
-                            b.mask,
-                            a,
-                            PaintContext {
-                                boundary: ctx.escape_boundary,
-                                ..ctx
+                if exports
+                    && branch
+                        .pose(
+                            planes,
+                            Coords {
+                                plane: parent,
+                                mask: stop,
                             },
-                            side == 1,
-                        ) else {
-                            continue;
-                        };
-                        id
-                    };
+                            id,
+                            a,
+                            ctx,
+                            side,
+                        )
+                        .is_none()
+                {
+                    continue;
                 }
                 if side == 0 {
                     let draw = &mut self.draw.build;
@@ -780,12 +865,7 @@ impl Output {
                     &mut self.hits.build.clips
                 };
                 let mask = clips.add(mask, inner);
-                let inner_shape = || {
-                    inner.unwrap_or_else(|| Rounded {
-                        rect: decor.inner_rect(ctx.frame, ctx.scale),
-                        radii: [0.; 4],
-                    })
-                };
+                let inner_shape = || ctx.inner_guard(a, inner);
                 if exports && a.clip_nearby {
                     // Only explicit guards follow an escape, even through scroll content.
                     branch.escape.mask = clips.add(branch.escape.mask, Some(inner_shape()));
@@ -801,14 +881,7 @@ impl Output {
                         mask: content.mask,
                     };
                 }
-                if p.ports[side].boundary {
-                    for (slot, child) in e.nearby(k) {
-                        if slot.escapes() && layers.parts[child].ports[side].nonempty {
-                            self.bands.push(child, branch);
-                        }
-                    }
-                    branch.depth += 1;
-                }
+                self.submit_escapes(e, k, layers, side, &mut branch);
                 if side == 0 && (p.paint.text.is_some() || e.slots[k].shape == Shape::Image) {
                     let bleed = u8::from(rounded_parent) + u8::from(inner.is_some());
                     let scope = if e.slots[k].shape == Shape::Image {
@@ -824,45 +897,37 @@ impl Output {
                 }
                 let scope = Scope { mask, ..scope };
                 let paragraph = e.slots[k].shape == Shape::Paragraph;
-                if paragraph && !layers.paragraphs.fragments(k).is_empty() {
-                    self.stack.push((k, Visit::Inline(wheel), content));
+                let child_branch = Branch { wheel, ..branch };
+                let mut ordinal = self.stack.len();
+                let park_floats =
+                    paragraph && self.inline_visits(e, k, layers, side, content, child_branch);
+                let rounded_parent = inner.is_some() && !ctx.scrollport;
+                for &c in e.children(k).iter().rev().filter(|&&c| {
+                    layers.parts[c].ports[side].nonempty
+                        && (!paragraph || e.float_side(c).is_some())
+                }) {
+                    let visit = if park_floats && layers.parts[c].ports[side].exports {
+                        // Both traversals use reverse declaration order. Advance one cursor
+                        // through the inline visits; park the chain directly on its release.
+                        while self.stack[ordinal].0 != c {
+                            ordinal += 1;
+                        }
+                        let release = ordinal;
+                        ordinal += 1;
+                        Visit::Float {
+                            rounded_parent,
+                            branch: child_branch,
+                            release,
+                        }
+                    } else {
+                        Visit::Node {
+                            rounded_parent,
+                            branch: child_branch,
+                        }
+                    };
+                    self.stack.push((c, visit, content));
                 }
-                self.stack.extend(
-                    e.children(k)
-                        .iter()
-                        .rev()
-                        .filter(|&&c| {
-                            layers.parts[c].ports[side].nonempty
-                                && (!paragraph || e.float_side(c).is_some())
-                        })
-                        .map(|&c| {
-                            (
-                                c,
-                                Visit::Node {
-                                    rounded_parent: inner.is_some() && !ctx.scrollport,
-                                    branch: Branch { wheel, ..branch },
-                                },
-                                content,
-                            )
-                        }),
-                );
-                self.stack.extend(
-                    e.nearby(k)
-                        .rev()
-                        .filter(|(s, c)| {
-                            *s == Slot::Behind && layers.parts[*c].ports[side].nonempty
-                        })
-                        .map(|(_, c)| {
-                            (
-                                c,
-                                Visit::Node {
-                                    rounded_parent: false,
-                                    branch,
-                                },
-                                scope,
-                            )
-                        }),
-                );
+                self.behinds(e, k, layers, side, scope, branch);
             }
             self.bands.finish();
             if side == 0 {
@@ -874,6 +939,48 @@ impl Output {
             }
         }
         self.fits.bind(&mut self.draw.build);
+    }
+    fn submit_escapes(
+        &mut self,
+        e: &Elements,
+        k: Key,
+        layers: &Layers,
+        side: usize,
+        branch: &mut Branch,
+    ) {
+        if layers.parts[k].ports[side].boundary {
+            for (slot, child) in e.nearby(k) {
+                if slot.escapes() && layers.parts[child].ports[side].nonempty {
+                    self.bands.push(child, *branch);
+                }
+            }
+            branch.depth += 1;
+        }
+    }
+    fn behinds(
+        &mut self,
+        e: &Elements,
+        k: Key,
+        layers: &Layers,
+        side: usize,
+        scope: Scope,
+        branch: Branch,
+    ) {
+        self.stack.extend(
+            e.nearby(k)
+                .rev()
+                .filter(|(s, c)| *s == Slot::Behind && layers.parts[*c].ports[side].nonempty)
+                .map(|(_, c)| {
+                    (
+                        c,
+                        Visit::Node {
+                            rounded_parent: false,
+                            branch,
+                        },
+                        scope,
+                    )
+                }),
+        );
     }
     fn leaf(&mut self, e: &Elements, k: Key, layers: &Layers, scope: Scope, bleed: u8) {
         let ctx = layers.paint[k];

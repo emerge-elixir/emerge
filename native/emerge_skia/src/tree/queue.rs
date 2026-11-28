@@ -12,22 +12,32 @@ pub(super) enum Direction {
     DeepFirst,
 }
 
-struct Entry {
+struct Entry<T> {
     next: Option<Key>,
-    outputs: Outputs,
+    value: T,
 }
 
 #[derive(Default)]
-pub(super) struct WorkSet {
+pub(super) struct WorkSet<T = Outputs> {
     heads: Vec<Option<Key>>,
-    queued: SecondaryMap<Key, Entry>,
+    queued: SecondaryMap<Key, Entry<T>>,
     active: [u64; (MAX_DEPTH + 1).div_ceil(BITS)],
     // Both extremes are valid whenever queued is nonempty.
     shallow: usize,
     deep: usize,
 }
 
-impl WorkSet {
+impl<T: Copy + std::ops::BitOrAssign> WorkSet<T> {
+    pub fn first_depth(&self) -> Option<usize> {
+        (!self.queued.is_empty()).then_some(self.shallow)
+    }
+    pub fn pop_at(&mut self, shallow: usize) -> Option<(Key, T)> {
+        if self.first_depth() == Some(shallow) {
+            self.pop(Direction::ShallowFirst)
+        } else {
+            None
+        }
+    }
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.queued.is_empty()
@@ -53,7 +63,7 @@ impl WorkSet {
         while self.pop(Direction::ShallowFirst).is_some() {}
     }
 
-    pub fn push(&mut self, depth: usize, k: Key, outputs: Outputs) {
+    pub fn push(&mut self, depth: usize, k: Key, value: T) {
         let empty = self.queued.is_empty();
         let Some(slot) = self.queued.entry(k) else {
             return;
@@ -68,14 +78,12 @@ impl WorkSet {
                     (self.shallow.min(depth), self.deep.max(depth))
                 };
             }
-            Entry { next, outputs }
+            Entry { next, value }
         });
-        if entry.outputs != outputs {
-            entry.outputs = Outputs::Both;
-        }
+        entry.value |= value;
     }
 
-    pub fn pop(&mut self, direction: Direction) -> Option<(Key, Outputs)> {
+    pub fn pop(&mut self, direction: Direction) -> Option<(Key, T)> {
         if self.queued.is_empty() {
             return None;
         }
@@ -110,7 +118,7 @@ impl WorkSet {
                 }
             }
         }
-        Some((k, entry.outputs))
+        Some((k, entry.value))
     }
 }
 

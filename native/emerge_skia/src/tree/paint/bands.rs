@@ -14,9 +14,26 @@ pub(super) struct Branch {
 struct Job {
     root: Key,
     next: u32,
-    escape: Coords,
-    group: u32,
-    wheel: u32,
+    branch: Branch,
+}
+// Floats paint locally before inline ink. In a mixed paragraph, park the
+// float's submissions until its ordinary ordinal, without revisiting it.
+#[derive(Default, Clone, Copy)]
+pub(super) struct Chain {
+    head: u32,
+    tail: u32,
+}
+impl Chain {
+    fn append(&mut self, more: Self, jobs: &mut [Job]) {
+        if more.head != 0 {
+            if self.tail == 0 {
+                self.head = more.head;
+            } else {
+                jobs[self.tail as usize - 1].next = more.head;
+            }
+            self.tail = more.tail;
+        }
+    }
 }
 #[derive(Default)]
 pub(super) struct Bands {
@@ -24,7 +41,7 @@ pub(super) struct Bands {
     buckets: Vec<[u32; 2]>,
     active: Vec<u64>,
     run: u32,
-    depth: usize,
+    capturing: Option<Chain>,
 }
 impl Bands {
     pub fn reserve(&mut self, n: usize, b: Budget) -> Result<(), String> {
@@ -41,16 +58,45 @@ impl Bands {
         }
         Ok(())
     }
-    pub fn push(&mut self, root: Key, b: Branch) {
-        let d = b.depth;
+    pub fn begin_float(&mut self) -> Option<Chain> {
+        self.capturing.replace(Chain::default())
+    }
+    pub fn end_float(&mut self, enclosing: Option<Chain>) -> Chain {
+        std::mem::replace(&mut self.capturing, enclosing).expect("active float")
+    }
+    pub fn release_float(&mut self, chain: Chain) {
+        if let Some(enclosing) = &mut self.capturing {
+            enclosing.append(chain, &mut self.jobs);
+        } else {
+            let mut link = chain.head;
+            while link != 0 {
+                let next = std::mem::take(&mut self.jobs[link as usize - 1].next);
+                self.queue(link);
+                link = next;
+            }
+        }
+    }
+    pub fn push(&mut self, root: Key, branch: Branch) {
         self.jobs.push(Job {
             root,
+            branch,
             next: 0,
-            escape: b.escape,
-            group: b.group,
-            wheel: b.wheel,
         });
         let link = self.jobs.len() as u32;
+        if let Some(chain) = &mut self.capturing {
+            chain.append(
+                Chain {
+                    head: link,
+                    tail: link,
+                },
+                &mut self.jobs,
+            );
+        } else {
+            self.queue(link);
+        }
+    }
+    fn queue(&mut self, link: u32) {
+        let d = self.jobs[link as usize - 1].branch.depth;
         let [head, tail] = &mut self.buckets[d];
         if *tail == 0 {
             *head = link;
@@ -68,22 +114,20 @@ impl Bands {
             let d = 64 * i + bit;
             self.active[i] &= !(1 << bit);
             self.run = std::mem::take(&mut self.buckets[d])[0];
-            self.depth = d + 1;
         }
         let job = self.jobs[self.run as usize - 1];
         self.run = job.next;
         Some((
             job.root,
             Branch {
-                escape: job.escape,
-                depth: self.depth,
-                group: job.group,
-                wheel: job.wheel,
+                depth: job.branch.depth + 1,
+                ..job.branch
             },
             new_band,
         ))
     }
     pub fn finish(&mut self) {
+        debug_assert!(self.capturing.is_none());
         self.jobs.clear();
     }
 }

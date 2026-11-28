@@ -2,9 +2,9 @@
 
 Emerge has one layout engine. It sizes and places elements before any renderer executes the shared Skia draw commands. Layout support is tracked by element and rule, not by renderer or OS.
 
-**Latest change:** [Scrolling](scrolling.md) on supported block containers. User input moves content, not its layout boxes or the scroller's own overlays. Fractions survive resize; a changed key declaration aligns its target once. Scrollbars, local clicks and `on_scroll/1` use the installed frame.
+**Latest change:** [Nearby layout after host placement](nearby-layout-scheduling.md). A wrapped inline El anchors one panel per declaration. Packed and height-sized Image hosts offer their final width; a turned side panel can read the actual height of a reflowed paragraph or a fill share.
 
-**Linux test results:** [Scrolling verification](scrolling.md#verification): **311 native**, **108 focused Mix**, **910/953 ordinary**. Four failures cleared since [Nearby](nearby-layers.md#verification-and-limits); 43 failures remain and the 21 exclusions are unchanged by name. A private Wayland seat exercised wheel, precise scroll, scrollbar drag and opt-in overlay clipping on raster, OpenGL and Vulkan at scales 1 and 1.5.
+**Linux test results:** [320 native, 110 focused Mix, 912/955 ordinary](nearby-layout-scheduling.md#verification). The same 43 failures and 21 exclusions remain by name as after [Scrolling](scrolling.md#verification). Private raster/OpenGL/Vulkan windows checked capture, compositor crop and routed local clicks at scales 1 and 1.5.
 
 **Selected work:** None.
 
@@ -46,6 +46,7 @@ The [reference comparisons](image-sizing-and-codecs.md#red-controls-before-imple
 - **Spacing and alignment (`Space`, `Align`):** Padding, fixed or [even gaps](../test/emerge_skia/linear_even_spacing_test.exs), and [main- and cross-axis alignment](../test/emerge_skia/linear_zones_test.exs) work per line or column.
   A [paragraph span](inline-layout-rotation.md#vertical-alignment-on-one-line) aligns to the top, center or bottom of its own line, including beside a layout-turned phrase. An [El child](../test/emerge_skia/el_child_alignment_test.exs) can override either axis; an [aligned root](../test/emerge_skia/root_alignment_test.exs) stays at the origin. [Inactive even spacing](../test/emerge_skia/inactive_even_spacing_test.exs) and snap flags do not add geometry or font rounding.
 - **Nearby:** `behind_content` lies between the host's backdrop and content. `above`, `below`, `on_left`, `on_right` and `in_front` escape ordinary ancestor clips but respect the viewport and explicit `clip_nearby/0` clips. Scrolling alone does not clip an escape. The panel aligns on its active axes, follows its host's pose, and does not move ordinary siblings. [Ordered mounts, installed pixels, blockers and local clicks](nearby-layers.md#verification-and-limits).
+  In `el(attrs, text(...))`, the `el` owns the mount. A `below` menu starts at the bottom of the wrapper's aligned continuations, not the bottom of the paragraph. Gaps are not wrapper hits. `text/1` takes a string, not attributes; a raw wire mount on the inline Text itself is still rejected. [Geometry, rewrap and undo](nearby-layout-scheduling.md#geometry-controls).
 - **Static layout rotation (`UI.rotate/1`):** Blocks and floats occupy their [turned border box](static-layout-transforms.md#layout-controls). A [Row or WrappedRow](size.md#s5-row-charges-and-wrappedrow-membership) uses the independently measured wrapped height when dividing space between siblings. On [inline Text or El→Text](inline-layout-rotation.md#reference-cases), the rotated phrase contributes its width and height to the line; its decoration, ink and hit region turn together.
 - **Static `Transform`:** Translation, rotation and uniform scale are **transforms that preserve sibling layout**. Ink can overlap a sibling; [clicks follow the installed shape and clips](../test/emerge_skia/static_transforms_test.exs), including on paragraph spans. Negative scale reverses both axes; zero scale removes ink and hits. `alpha/1` changes opacity, not hits.
 - **Images:** Bitmap and SVG leaves support [intrinsic size, aspect ratio and fill](#image-sources-and-sizing). BMP support is limited to the listed `BI_RGB` formats, GIF to frame zero and WebP to still images.
@@ -60,7 +61,6 @@ The [reference comparisons](image-sizing-and-codecs.md#red-controls-before-imple
 - **Text inputs (`Input.text/2`, `Input.multiline/2`):** Controlled editing and value echo, caret, selection, IME, and multiline wrapping and scrolling.
 - **Sliders (`Input.slider/2`, `Input.Slider.config/0,1`):** Controlled range, value and step; track, filled track and thumb; delivery of value changes.
 - **Video (`video/2`):** Size and fit a named video target and paint its latest frame. Sending headless frames *out* does not implement video input.
-- **Nearby anchor limits:** No single anchor for an inline continuation. A panel cannot read a host width first known in Place or project width from a host height first known in Reflow/Place. These declarations fail before acceptance.
 - **Other scroll inputs:** Keyboard/focus reveal, touch momentum and gesture arbitration depend on their input and focus ports.
 - **Fonts:** Letter spacing, word spacing, custom font loading and text layout inside editors.
 - **Element events and focus (`Event`, `focus_on_mount/0`):** Mouse down/up/enter/leave/move, press, drag/capture, directional swipes, key down/up/press, focus/blur, change and `virtual_key`. Button press and keyboard activation are also missing.

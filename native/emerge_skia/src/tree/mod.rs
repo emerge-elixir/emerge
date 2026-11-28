@@ -414,10 +414,7 @@ struct Subtree {
     height: usize,
     direct: usize,
     mounted_constraints: bool,
-    // Admission facts, not intrinsic/layout demand. An attrs-only edit can
-    // disprove an anchor without visiting the host's other panels.
-    reads_anchor: [bool; 2],
-    mount_needs: [bool; 2],
+    reads_anchor_height: bool,
     mounts: usize,
     escapes: usize,
     child_group_runs: usize,
@@ -434,8 +431,7 @@ impl Default for Subtree {
             height: 0,
             direct: 0,
             mounted_constraints: false,
-            reads_anchor: [false; 2],
-            mount_needs: [false; 2],
+            reads_anchor_height: false,
             mounts: 0,
             escapes: 0,
             child_group_runs: 0,
@@ -455,10 +451,7 @@ impl Subtree {
             s.mounts += c.mounts + usize::from(slot.is_some());
             s.escapes += c.escapes + usize::from(slot.is_some_and(Slot::escapes));
             s.child_group_runs += c.group_runs;
-            if let Some(slot) = slot {
-                s.mount_needs[0] |= slot.host_width() && c.reads_anchor[0];
-                s.mount_needs[1] |= slot.host_height() && c.reads_anchor[1];
-            } else {
+            if slot.is_none() {
                 s.direct += 1;
                 s.children = s.children.union(c.own);
             }
@@ -472,7 +465,8 @@ struct Mount {
     shape: Shape,
     parent: Option<Key>,
     slot: Option<Slot>,
-    depth: Cell<(u64, usize)>,
+    // Ownership depth (all edges) and layout rank (mount edges only), both <= MAX_DEPTH.
+    depths: Cell<(u64, [u16; 2])>,
     stats: Subtree,
     // Resource inputs of the last accepted declaration, not installed geometry.
     admitted: scale::Inputs,
@@ -509,15 +503,21 @@ impl Elements {
     }
     // Read final parent links, not the old depth of a moved kept branch. Only
     // paths read by admission or a scheduled pass get a current memo.
-    fn depth(&self, k: Key) -> usize {
+    fn depths(&self, k: Key) -> [u16; 2] {
         let m = &self.slots[k];
-        let (epoch, d) = m.depth.get();
+        let (epoch, depths) = m.depths.get();
         if epoch == self.topology {
-            return d;
+            return depths;
         }
-        let d = m.parent.map_or(0, |p| 1 + self.depth(p));
-        m.depth.set((self.topology, d));
-        d
+        let depths = m.parent.map_or([0, 0], |p| {
+            let [d, rank] = self.depths(p);
+            [d + 1, rank + u16::from(m.slot.is_some())]
+        });
+        m.depths.set((self.topology, depths));
+        depths
+    }
+    fn depth(&self, k: Key) -> usize {
+        usize::from(self.depths(k)[0])
     }
     fn attached_count(&self) -> usize {
         self.slots.len() - self.detached.len()

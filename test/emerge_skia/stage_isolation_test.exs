@@ -86,6 +86,24 @@ if System.get_env("EMERGE_TEST_STAGES") in ~w(headless raster opengl vulkan) do
         )
       end
 
+      def render(%{pose: {:packed_menu, sibling}}) do
+        menu =
+          el(
+            [width(fill()), height(px(10)), Background.color(:green), Event.on_click(:menu)],
+            none()
+          )
+
+        card = el([width(px(12)), height(px(20))], none())
+
+        column([width(px(64)), height(px(64)), Background.color(:blue), Event.on_click(:paper)], [
+          wrapped_column(
+            [width(content()), height(fill()), spacing_xy(6, 4), Nearby.in_front(menu)],
+            [card, card]
+          ),
+          el([width(px(8)), height(px(sibling))], none())
+        ])
+      end
+
       def render(%{pose: {:pack, words, msg}}) do
         row([width(fill()), height(fill())], [
           wrapped_column([width(content()), height(px(60)), spacing_xy(6, 4)], [
@@ -656,6 +674,38 @@ if System.get_env("EMERGE_TEST_STAGES") in ~w(headless raster opengl vulkan) do
     end
 
     if @api == :headless do
+      test "a packed host and its fill-width menu change installed pixels and hits together", %{
+        v: v,
+        r: r
+      } do
+        send(v, {:pose, {:packed_menu, 20}})
+        stage(:installed, 3)
+        gate(r, :opportunity, true)
+        send(v, {:pose, {:packed_menu, 21}})
+        stage(:ready, 4)
+
+        old = fn ->
+          assert {:ok, <<0, 0, 255, 255>>} = EmergeSkia.render_to_pixels(r, region: {25, 5, 1, 1})
+          click_point(r, {25.0, 5.0})
+          assert_receive {:routed, {:paper, %{x: 25.0, y: 5.0}}}
+        end
+
+        old.()
+        gate(r, :claimed, true)
+        gate(r, :opportunity, false)
+        claim = stage(:claimed, 4)
+        gate(r, :opportunity, true)
+        gate(r, :reject, true)
+        gate(r, :claimed, false)
+        assert stage(:reject, 4) == claim
+        old.()
+        gate(r, :opportunity, false)
+        stage(:installed, 4)
+        assert {:ok, <<0, 255, 0, 255>>} = EmergeSkia.render_to_pixels(r, region: {25, 5, 1, 1})
+        click_point(r, {25.0, 5.0})
+        assert_receive {:routed, {:menu, %{x: 25.0, y: 5.0}}}
+      end
+
       test "wheel bursts use the installed scroll route; held or rejected app jumps cannot replay older input",
            %{v: v, r: r} do
         wheel = fn ->

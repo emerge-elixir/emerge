@@ -1,0 +1,38 @@
+# Finish host layout before Nearby mounts
+
+**Implemented.** All six slots read the host's **placed local border box**. A panel cannot change its host's size, its ordinary siblings' shares, or the paragraph's line breaks. This closes the three retained scheduling refusals; it does not add a `text/1` attribute list, a second layout tree, a wire tag or a NIF.
+
+## Layout and installation
+
+[Layout rank](../native/emerge_skia/src/tree/layers.rs) counts mount edges from the root. Ordinary edges stay at the same rank; even `behind_content` starts a new rank. After folding accepted edits, invalidate once against the final topology. For each **nonempty** rank, drain Context → Measure → Flow → Reflow → Place. Keep the existing shallow/deep phase directions. If only a panel changed, it can read a clean host without running layout on the host.
+
+- [Depth and rank](../native/emerge_skia/src/tree/mod.rs) share a lazy topology memo. Reparenting or changing ordinary ↔ mounted at the same parent invalidates it even for closed descendants. Pending work uses [one generational entry per dirty key](../native/emerge_skia/src/tree/queue.rs), with a merged phase mask and active rank bits. There is no per-rank tree scan or workset per panel.
+- On activation, reopen constrained-input collection before Measure. Ordinary parents alone consume their children's [constrained fits](../native/emerge_skia/src/tree/layers/constrained.rs); the document still owns shared float bands and a paragraph produces its fragments once at its final width. Host Place notifies direct readers of changed axes and origins. The [slot offers](../guides/internals/nearby-semantics.md#slot-geometry) are **available**, including zero, not assigned or inset by padding. Align the panel's occupied size in that box.
+- [Inline packing](../native/emerge_skia/src/tree/paint/inline.rs) visits the El owner once with its aligned fragments. Its enclosing rectangle is for layout; the wrapper's own listeners still cover individual lines. Draw line backdrops, local behinds, then content/borders. Floats still paint locally first; for a mixed paragraph, hold their escape submissions until their declaration positions on the same traversal stack. No panel per fragment, revisit of a float or extra surface.
+- Only after layout, drain PaintContext → Compose once and pack the changed draw/hit streams in [visual band order](nearby-layers.md#observable-order). The accepted declaration, candidate and installed frame remain distinct. `:busy` is neither accepted nor queued.
+- Both [detached](../native/emerge_skia/src/tree/wire/patch.rs) and [live](../native/emerge_skia/src/tree/wire/publisher.rs) paths reserve key-indexed rank links, at most `1 + min(mount_edges, MAX_DEPTH)` rank headers and the additional visits before acceptance. No deferred workspace on a tree that has never needed it. Only the [obsolete refusals](../native/emerge_skia/src/tree/wire/batch/layout_sites.rs) were lifted. Raw mounts on an inline Text, unsupported spans, storage/depth errors and genuine ordinary size cycles (including inside a panel) remain refusals.
+
+## Geometry controls
+
+The [native scheduling tests](../native/emerge_skia/src/tree/tests/nearby/schedule.rs) distinguish an early estimate from placement, compare ordinary frames/lines with mount-free twins, and check edits and undo against cold declarations. The [admission controls](../native/emerge_skia/src/tree/tests/nearby/admission.rs) include live publication and closed El→Text moves.
+
+| Host and edit | Observed at scale 1 |
+| --- | --- |
+| Multiline inline El between other words; narrow and widen the paragraph | One fill-width `below` strip at the left/bottom of the rectangle enclosing **all** aligned continuations. One mounted draw and hit visit per panel, independent of the number of lines. Following words keep their line breaks. An uncovered continuation gap routes to the paper. |
+| Content-width `wrapped_column`, two 12×20 cards, gaps 6/4; height 44 → 43 → 44 | Panel width and following peer's x: **12 → 30 → 12**. A separate packing control changes only a reflowing sibling: its second line leaves height 35, and placed width 30 differs from the pack's single-column Flow basis. |
+| 2:1 Image allocated the height remaining in a 48px Column; change only its sibling 8 → 16 → 8 | Pending overlay width 64; after load, Image and overlay widths **80 → 64 → 80**, with the same right edge. The mount-free Image's Flow width differs from its placed width. |
+| `on_right`, `width(px(20))`, `height(fill())`, `UI.rotate(90)` | A shared-flow paragraph declared 8px high but occupied by a 64px float gets a **64×20** side panel, not 8×20. Also checked at height 32, on a content-height El and on an allocated Column share. |
+
+[Paint and hit tests](../native/emerge_skia/src/tree/tests/nearby/inline.rs) cover mixed float/inline order, zero-area anchors, local behinds and a behind's escaping child. A panel-only change doesn't schedule unrelated layout. A pure mount reorder doesn't solve paragraph lines. A closed branch can change rank without changing ownership depth; edits/undo are compared at settle.
+
+## Reference comparison
+
+One-shot raster exports only, pinned `main` `aef5e42fc789c396505f85c34810b2ca9c008586` (`resolve_nearby_mounts`). The green Image overlay matched at **(80,0,80,6)** and **(96,0,64,6)**. Both renderers showed the same blue continuations at paragraph widths 150 and 48; only retained showed the green strip below them. For final shared-document heights 64 and 32, `main` showed **8×20** at x=40 in both exports; retained showed **64×20** and **32×20**. `wrapped_column` is retained-only. These exports do not establish `main` input behavior.
+
+## Verification
+
+- Linux locked release Cargo: **320 passed** (also Rust **1.91.0**). Strict Clippy and Rust/Mix formatting, warning-clean Mix compile and Credo passed. The Linux/glibc [interposer](../native/emerge_skia/src/tree/tests/allocations.rs) counted **[0, 0, 0]** alloc/realloc/free on the measured reserved/fitting paths: first mount with unchanged key count, 512 sibling mounts and a 512-edge chain, 1,024 ordinary children under one mount, empty inline/float exporters and multiline rewrap. Includes positive counter controls. Not a claim about BEAM, rasterization, allocation during growth or latency.
+- **110 focused Mix tests passed**. Ordinary `mix test --seed 17`: **912/955 passed** (15 doctests, 897 tests), **43 failed, 21 excluded**. Failure and exclusion names are unchanged from [Scrolling](scrolling.md#verification); the suite is not green. `stage-probes`: **320 native, 20 focused, 19 stage tests**. With a [packed menu held and rejected](../test/emerge_skia/stage_isolation_test.exs), `(25,5)` stayed blue and routed to `:paper` until installation switched both to green/`:menu`. That test also passed five additional seeds.
+- [Public headless tests](../test/emerge_skia/nearby_layers_test.exs) distinguish one-shot pixels, delivered pixels, installed capture and routed coordinates. Wayland/Vulkan: **344 native, 20 focused**. On separate private raster/OpenGL/Vulkan windows at scales 1 and 1.5, **each presenter** checked 26 installed capture/compositor crop pairs and 24 routed local clicks: pack width, turned side, rewrapped span, and scrolled/posed escape with `clip_nearby()` off → on → off. Whole RGB compared at scale 1; interior samples compared separately at 1.5. No timing, physical scanout or other-platform claim.
+
+Local source manifests, matched libraries, logs and replay instructions: `/workspace/.emerge-nearby-layout-zM9s3T/HOWTO.md` (`qualified`, `minimum2`, `probes-final`, `vk-final`, `slots`, `seat-*-stack1`). Earlier Nearby and Scrolling checkpoints remain separate.

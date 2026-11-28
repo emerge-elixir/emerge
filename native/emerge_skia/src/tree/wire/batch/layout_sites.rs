@@ -87,22 +87,25 @@ impl Batch {
         }
     }
     pub(super) fn check_layout_sites(&self, e: &Elements) -> Result<()> {
-        // Includes changed resident ancestors of the patch target. Closed
-        // branch moves carry the counts, not a walk of their descendants.
+        // An inline El owns its panel(s); its ordinary Text only supplies
+        // fragments. Check that source even on a closed move into prose.
         for s in &self.entries {
-            if s.stats.mounts != 0 && self.inline_text(e, s.id) {
-                return Err("Nearby needs a block anchor, not a paragraph continuation".into());
+            if s.stats.mounts == 0 || !self.inline_text(e, s.id) {
+                continue;
             }
-            if s.stats.mount_needs[1]
-                && s.shape == Shape::Paragraph
-                && self
-                    .site_parent(e, s.id)
-                    .is_some_and(|p| self.declaration(e, p).0 == Shape::TextColumn)
+            let mut ordinary = self.layout_children(e, s.id);
+            if s.shape != Shape::El
+                || !ordinary.next().is_some_and(|id| {
+                    self.declaration(e, id).0 == Shape::Text
+                        && self
+                            .get(id)
+                            .map_or_else(|| e.slots[e.ids[&id]].stats, |s| s.stats)
+                            .mounts
+                            == 0
+                })
+                || ordinary.next().is_some()
             {
-                let (_, a) = self.declaration(e, s.id);
-                if !a.rotation.mixes_axes() && a.float_side().is_none() {
-                    return Err("Nearby height-dependent width needs an anchor known before document reflow".into());
-                }
+                return Err("Nearby needs an inline El owner, not a paragraph continuation on Text or an unsupported span".into());
             }
         }
         for &i in &self.post {

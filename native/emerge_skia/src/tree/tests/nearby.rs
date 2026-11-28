@@ -1,7 +1,9 @@
 use super::*;
 
 mod admission;
+mod inline;
 mod ordering;
+mod schedule;
 mod scopes;
 
 pub(super) fn mounted(mut record: Bytes, refs: &[(u8, u64)]) -> Bytes {
@@ -13,7 +15,7 @@ pub(super) fn mounted(mut record: Bytes, refs: &[(u8, u64)]) -> Bytes {
     }
     record
 }
-fn chip(w: f64, h: f64, rgb: [u8; 3], click: bool) -> Bytes {
+pub(super) fn chip(w: f64, h: f64, rgb: [u8; 3], click: bool) -> Bytes {
     block(&[px(1, w), px(2, h), color(rgb), vec![40, u8::from(click)]])
 }
 fn padding(t: f64, l: f64) -> Bytes {

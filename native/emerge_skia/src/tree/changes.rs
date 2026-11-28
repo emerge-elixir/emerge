@@ -25,7 +25,7 @@ impl Mount {
             index,
             parent: None,
             slot: None,
-            depth: Cell::new((0, 0)),
+            depths: Cell::new((u64::MAX, [0; 2])),
             stats: Subtree::default(),
             admitted: scale::Inputs::default(),
             children: OrderSpan::default(),
@@ -139,7 +139,7 @@ impl Layers {
                     self.enqueue(Pass::Place, k, e);
                 }
                 let height =
-                    old.host_height() != next.host_height() && e.slots[k].stats.reads_anchor[1];
+                    old.host_height() != next.host_height() && e.slots[k].stats.reads_anchor_height;
                 if height || (old.host_width() != next.host_width() && self.reads_width_offer(e, k))
                 {
                     self.enqueue(Pass::Flow, k, e);
@@ -162,6 +162,8 @@ impl Layers {
             }
             if (moved || change.reattached)
                 && (Self::reads_early_height(e, k)
+                    || (e.slots[k].stats.reads_anchor_height
+                        && (role.is_some() || change.old_parent.is_some_and(|(_, s)| s.is_some())))
                     || e.attrs[k].line_floor.is_some()
                     || change
                         .before
@@ -208,6 +210,10 @@ impl Layers {
             }
             if old_layout.is_some_and(|old| old.height_reader != new_layout.height_reader) {
                 self.enqueue(Pass::Context, k, e);
+                if role.is_some_and(Slot::host_height) {
+                    self.enqueue(Pass::Measure, k, e);
+                    self.enqueue(Pass::Flow, k, e);
+                }
                 if let Some(p) = e.layout_parent(k)
                     && e.slots[p].shape == Shape::Column
                 {
@@ -221,10 +227,22 @@ impl Layers {
             }
             let shared_order =
                 shared.is_some_and(|(a, b)| !std::sync::Arc::ptr_eq(&a.children, &b.children));
-            if (change.cold || change.reattached || moved || change.order.is_some() || shared_order)
-                && let Some(p) = e.inline_host(k)
-            {
-                self.enqueue(Pass::Reflow, p, e);
+            if let Some(p) = e.inline_host(k) {
+                let old_children = change
+                    .order
+                    .map(|s| e.orders.get(s).children())
+                    .or_else(|| {
+                        shared
+                            .filter(|_| shared_order)
+                            .map(|(r, _)| r.children.edges().children())
+                    });
+                if change.cold
+                    || change.reattached
+                    || moved
+                    || old_children.is_some_and(|old| old != e.children(k))
+                {
+                    self.enqueue(Pass::Reflow, p, e);
+                }
             }
             if !change.cold && e.attrs[k].has_art() {
                 let source = e.images.source(k);
@@ -546,8 +564,12 @@ impl Layers {
             self.enqueue(Pass::Place, k, e);
             self.packed_width_reader(e, k);
         }
-        if a.height != b.height {
-            self.invalidate_nearby_heights(e, k);
+        if a.height != b.height
+            && e.slots[k].slot.is_some_and(Slot::host_height)
+            && e.slots[k].stats.own.height_reader
+        {
+            self.enqueue(Pass::Context, k, e);
+            self.enqueue(Pass::Flow, k, e);
         }
         if shape.cross_height_px(a) != shape.cross_height_px(b)
             || (shape.cross_height_px(b).is_some()

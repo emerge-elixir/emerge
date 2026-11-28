@@ -67,215 +67,350 @@ fn lines(span: &[paragraph::Fragment]) -> impl Iterator<Item = (&[paragraph::Fra
         )
     })
 }
+#[derive(Clone, Copy)]
+pub(super) struct Span {
+    paragraph: Key,
+    first: u32,
+    end: u32,
+}
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum Part {
+    Whole,
+    Backdrop,
+    Content,
+}
 impl Output {
-    pub(super) fn inline(
+    /// Match declarations to aligned fragments once, including empty owners.
+    /// The stack pops them in source order, after ordinary float painting.
+    pub(super) fn inline_visits(
         &mut self,
         e: &Elements,
         k: Key,
         l: &Layers,
         side: usize,
         scope: Scope,
-        wheel: u32,
-    ) {
-        let ctx = l.paint[k];
-        let parent = Space {
-            plane: scope.plane,
-            clip: ctx.child_clip,
-            origin: [ctx.frame.x, ctx.frame.y],
-        };
-        for span in l
-            .paragraphs
-            .fragments(k)
-            .chunk_by(|a, b| a.owner == b.owner)
-        {
-            let (owner, source) = (span[0].owner, span[0].source);
-            let planes = if side == 0 {
-                &mut self.draw.build.planes
+        branch: Branch,
+    ) -> bool {
+        let children = e.children(k);
+        let park = l.parts[k].ports[side].exports
+            && children
+                .iter()
+                .any(|&c| e.float_side(c).is_none() && l.parts[c].ports[side].exports);
+        let words = l.paragraphs.fragments(k);
+        let mut end = words.len();
+        for &owner in children.iter().rev() {
+            if e.float_side(owner).is_some() {
+                if park && l.parts[owner].ports[side].exports {
+                    self.stack
+                        .push((owner, Visit::ReleaseFloat(bands::Chain::default()), scope));
+                }
             } else {
-                &mut self.hits.build.planes
-            };
-            let Some(outer) = parent.child(
+                let mut first = end;
+                while first > 0 && words[first - 1].owner == owner {
+                    first -= 1;
+                }
+                if first != end || !e.order(owner).tags.is_empty() {
+                    let span = Span {
+                        paragraph: k,
+                        first: first as u32,
+                        end: end as u32,
+                    };
+                    self.stack.push((owner, Visit::Inline(span, branch), scope));
+                }
+                end = first;
+            }
+        }
+        debug_assert_eq!(end, 0);
+        park
+    }
+    pub(super) fn inline_owner(
+        &mut self,
+        e: &Elements,
+        owner: Key,
+        l: &Layers,
+        side: usize,
+        scope: Scope,
+        (span, mut branch): (Span, Branch),
+    ) {
+        let a = &e.attrs[owner];
+        if side == 0 && a.opacity == Some(0) {
+            return;
+        }
+        let ctx = l.paint[owner];
+        let (planes, clips) = if side == 0 {
+            (&mut self.draw.build.planes, &mut self.draw.build.clips)
+        } else {
+            (&mut self.hits.build.planes, &mut self.hits.build.clips)
+        };
+        let Some(id) = planes.branch(scope.plane, scope.mask, a, ctx, side == 1) else {
+            return;
+        };
+        let port = l.parts[owner].ports[side];
+        let inner = a.decor.rounded_inner(ctx.frame, ctx.scale);
+        if port.exports {
+            if branch
+                .pose(
+                    planes,
+                    Coords {
+                        plane: scope.plane,
+                        mask: scope.mask,
+                    },
+                    id,
+                    a,
+                    ctx,
+                    side,
+                )
+                .is_none()
+            {
+                return;
+            }
+            if a.clip_nearby {
+                branch.escape.mask = clips.add(branch.escape.mask, Some(ctx.inner_guard(a, inner)));
+            }
+        }
+        let behind = e.order(owner).tags.contains(&Slot::Behind);
+        let scope = Scope { plane: id, ..scope };
+        let local = if behind {
+            Scope {
+                mask: clips.add(scope.mask, inner),
+                ..scope
+            }
+        } else {
+            scope
+        };
+        if side == 0
+            && let Some(alpha) = a.opacity
+        {
+            if port.exports {
+                branch.group = self.ancestry.child(branch.group, alpha);
+            }
+            let start = self.draw.build.begin_group(alpha);
+            self.stack.push((owner, Visit::Opacity(start), scope));
+        }
+        self.submit_escapes(e, owner, l, side, &mut branch);
+        self.inline_ink(
+            e,
+            owner,
+            l,
+            side,
+            scope,
+            (
+                span,
+                branch.wheel,
+                if behind { Part::Backdrop } else { Part::Whole },
+            ),
+        );
+        if behind {
+            self.stack
+                .push((owner, Visit::Ink(span, branch.wheel), scope));
+            self.behinds(e, owner, l, side, local, branch);
+        }
+    }
+    pub(super) fn inline_ink(
+        &mut self,
+        e: &Elements,
+        owner: Key,
+        l: &Layers,
+        side: usize,
+        scope: Scope,
+        (range, wheel, part): (Span, u32, Part),
+    ) {
+        let k = range.paragraph;
+        let span = &l.paragraphs.fragments(k)[range.first as usize..range.end as usize];
+        let Some(first) = span.first() else { return };
+        let source = first.source;
+        let ctx = l.paint[k];
+        let owner_ctx = l.paint[owner];
+        let outer = Space {
+            plane: scope.plane,
+            clip: owner_ctx.clip,
+            origin: [
+                ctx.frame.x + (owner_ctx.offset[0] - ctx.offset[0]),
+                ctx.frame.y + (owner_ctx.offset[1] - ctx.offset[1]),
+            ],
+        };
+        let planes = if side == 0 {
+            &mut self.draw.build.planes
+        } else {
+            &mut self.hits.build.planes
+        };
+        let ink = if part == Part::Backdrop {
+            None
+        } else if source == owner {
+            Some(outer)
+        } else {
+            outer.child(
                 planes,
                 scope.mask,
-                &e.attrs[owner],
-                l.paint[owner],
+                &e.attrs[source],
+                l.paint[source],
                 ctx,
                 side == 1,
-            ) else {
-                continue;
-            };
-            let ink = if source == owner {
-                Some(outer)
+            )
+        };
+        // A separately layout-turned Text occupies one projected slot
+        // inside its El. The El's hit, decoration and mask surround that
+        // slot in the El's axes, not in the axes of the Text's glyphs.
+        let owner_rect = |r| {
+            if source != owner && e.attrs[source].rotation.mixes_axes() {
+                l.paint[owner].frame
             } else {
-                outer.child(
-                    planes,
-                    scope.mask,
-                    &e.attrs[source],
-                    l.paint[source],
-                    ctx,
-                    side == 1,
-                )
-            };
-            // A separately layout-turned Text occupies one projected slot
-            // inside its El. The El's hit, decoration and mask surround that
-            // slot in the El's axes, not in the axes of the Text's glyphs.
-            let owner_rect = |r| {
-                if source != owner && e.attrs[source].rotation.mixes_axes() {
-                    l.paint[owner].frame
-                } else {
-                    outer.rect(r)
-                }
-            };
-            let corners = e.attrs[owner].decor.radii(l.paint[owner].scale);
-            if side == 1 {
-                let hits = &mut self.hits.build;
-                if !(e.attrs[owner].click || e.attrs[source].click) {
-                    continue;
-                }
-                for (_, local) in lines(span) {
-                    let wrapper = owner_rect(local);
-                    let mask = hits.clips.add(scope.mask, Rounded::new(wrapper, corners));
-                    for (target, space) in [
-                        (owner, Some(outer)),
-                        (source, ink.filter(|_| source != owner)),
-                    ] {
-                        let Some(space) = space.filter(|_| e.attrs[target].click) else {
-                            continue;
-                        };
-                        let rect = if target == owner {
-                            wrapper
-                        } else {
-                            space.rect(local)
-                        };
-                        if let Some(area) = rect.intersection(space.clip) {
-                            let frame = l.paint[target].frame;
-                            hits.items.push(Hit {
-                                kind: HitKind::Listener,
-                                wheel,
-                                scope: space.line_scope(outer, scope, mask),
-                                key: Attachment(target, e.slots[target].attachment),
-                                id: e.slots[target].id,
-                                rect: area,
-                                origin: [frame.x, frame.y],
-                                scale: l.paint[target].scale,
-                            });
-                        }
-                    }
-                }
-                continue;
+                outer.rect(r)
             }
-            let draw = &mut self.draw.build;
-            let alpha = e.attrs[owner].opacity;
-            if alpha == Some(0) {
-                continue;
-            }
-            let group = alpha.map(|a| draw.begin_group(a));
-            let material = (owner != source && e.attrs[owner].decor.active())
-                .then(|| self.index.get(draw, e, owner));
-            let decoration = |draw: &mut Drawing, rect, phase| {
-                draw.scope = Scope {
-                    plane: outer.plane,
-                    ..scope
-                };
-                let rect = owner_rect(rect);
-                let clip = outer.clip.paint_clip(outer.plane != 0);
-                if let Some(material) = material {
-                    draw.push(Command::Box {
-                        material,
-                        rect,
-                        clip,
-                        phase,
-                    });
-                } else if matches!(phase, Phase::Under)
-                    && owner != source
-                    && let Some(color) = e.attrs[owner].background
-                    && let Some(area) = rect.intersection(clip)
-                {
-                    draw.push(Command::Fill(area, Brush::Solid(color)));
-                }
-            };
-            let source_ctx = l.paint[source];
-            let [t, r, b, left] = e.attrs[k]
-                .sizing
-                .padding
-                .map(|v| scale::pixels(v, ctx.scale));
-            let bounds = Rect {
-                x: ctx.frame.x + left,
-                y: ctx.frame.y + t,
-                width: (ctx.frame.width - left - r).max(0.),
-                height: (ctx.frame.height - t - b).max(0.),
-            };
-            let brush = self.index.brush(draw, e, source_ctx, bounds);
-            let moved_source =
-                source != owner && (e.attrs[source].posed() || e.attrs[source].offset != [0.; 2]);
-            let glyphs = |draw: &mut Drawing, line: &[paragraph::Fragment], rect| {
-                let Some(space) = ink.filter(|_| source_ctx.color & 255 != 0) else {
-                    return;
-                };
-                let mask = if moved_source {
-                    draw.clips
-                        .add(scope.mask, Rounded::new(owner_rect(rect), corners))
-                } else {
-                    scope.mask
-                };
-                draw.scope = space.line_scope(outer, scope, mask);
-                let run = l.runs[source];
-                for f in line {
-                    let start = draw.ids.len();
-                    for (id, pos) in l.text.word_glyphs(run, f.first as usize..f.end as usize) {
-                        draw.ids.push(id);
-                        draw.positions.push(pos);
-                    }
-                    if start != draw.ids.len() {
-                        let pos = [
-                            f.baseline[0] + space.origin[0],
-                            f.baseline[1] + space.origin[1],
-                        ];
-                        draw.push(Command::Glyphs {
-                            pos,
-                            clip: Some(space.clip.paint_clip(space.plane != 0)),
-                            bounds: space.clip,
-                            face: run.metrics.face,
-                            size: run.metrics.size,
-                            color: brush,
-                            range: start..draw.ids.len(),
-                        });
-                        draw.rules(
-                            source_ctx.rules,
-                            brush,
-                            pos,
-                            f.width,
-                            run.metrics.size,
-                            space.clip.paint_clip(space.plane != 0),
-                        );
-                    }
-                }
-            };
-            if owner != source
-                && let Some(alpha) = e.attrs[source].opacity
+        };
+        let corners = e.attrs[owner].decor.radii(l.paint[owner].scale);
+        if side == 1 {
+            let hits = &mut self.hits.build;
+            if !((part != Part::Content && e.attrs[owner].click)
+                || (ink.is_some() && e.attrs[source].click))
             {
-                for (_, r) in lines(span) {
-                    decoration(draw, r, Phase::Under);
-                }
-                if alpha != 0 {
-                    let inner = draw.begin_group(alpha);
-                    for (line, r) in lines(span) {
-                        glyphs(draw, line, r);
+                return;
+            }
+            for (_, local) in lines(span) {
+                let wrapper = owner_rect(local);
+                let mask = hits.clips.add(scope.mask, Rounded::new(wrapper, corners));
+                for (target, space) in [
+                    (owner, (part != Part::Content).then_some(outer)),
+                    (source, ink.filter(|_| source != owner)),
+                ] {
+                    let Some(space) = space.filter(|_| e.attrs[target].click) else {
+                        continue;
+                    };
+                    let rect = if target == owner {
+                        wrapper
+                    } else {
+                        space.rect(local)
+                    };
+                    if let Some(area) = rect.intersection(space.clip) {
+                        let frame = l.paint[target].frame;
+                        hits.items.push(Hit {
+                            kind: HitKind::Listener,
+                            wheel,
+                            scope: space.line_scope(outer, scope, mask),
+                            key: Attachment(target, e.slots[target].attachment),
+                            id: e.slots[target].id,
+                            rect: area,
+                            origin: [frame.x, frame.y],
+                            scale: l.paint[target].scale,
+                        });
                     }
-                    draw.end_group(inner, l.viewport);
-                }
-                for (_, r) in lines(span) {
-                    decoration(draw, r, Phase::Border);
-                }
-            } else {
-                for (line, r) in lines(span) {
-                    decoration(draw, r, Phase::Under);
-                    glyphs(draw, line, r);
-                    decoration(draw, r, Phase::Border);
                 }
             }
-            if let Some(start) = group {
-                draw.end_group(start, l.viewport);
+            return;
+        }
+        let draw = &mut self.draw.build;
+        let material = (owner != source && e.attrs[owner].decor.active())
+            .then(|| self.index.get(draw, e, owner));
+        let decoration = |draw: &mut Drawing, rect, phase| {
+            draw.scope = Scope {
+                plane: outer.plane,
+                ..scope
+            };
+            let rect = owner_rect(rect);
+            let clip = outer.clip.paint_clip(outer.plane != 0);
+            if let Some(material) = material {
+                draw.push(Command::Box {
+                    material,
+                    rect,
+                    clip,
+                    phase,
+                });
+            } else if matches!(phase, Phase::Under)
+                && owner != source
+                && let Some(color) = e.attrs[owner].background
+                && let Some(area) = rect.intersection(clip)
+            {
+                draw.push(Command::Fill(area, Brush::Solid(color)));
+            }
+        };
+        if part == Part::Backdrop {
+            for (_, r) in lines(span) {
+                decoration(draw, r, Phase::Under);
+            }
+            return;
+        }
+        let source_ctx = l.paint[source];
+        let [t, r, b, left] = e.attrs[k]
+            .sizing
+            .padding
+            .map(|v| scale::pixels(v, ctx.scale));
+        let bounds = Rect {
+            x: ctx.frame.x + left,
+            y: ctx.frame.y + t,
+            width: (ctx.frame.width - left - r).max(0.),
+            height: (ctx.frame.height - t - b).max(0.),
+        };
+        let brush = self.index.brush(draw, e, source_ctx, bounds);
+        let moved_source =
+            source != owner && (e.attrs[source].posed() || e.attrs[source].offset != [0.; 2]);
+        let glyphs = |draw: &mut Drawing, line: &[paragraph::Fragment], rect| {
+            let Some(space) = ink.filter(|_| source_ctx.color & 255 != 0) else {
+                return;
+            };
+            let mask = if moved_source {
+                draw.clips
+                    .add(scope.mask, Rounded::new(owner_rect(rect), corners))
+            } else {
+                scope.mask
+            };
+            draw.scope = space.line_scope(outer, scope, mask);
+            let run = l.runs[source];
+            for f in line {
+                let start = draw.ids.len();
+                for (id, pos) in l.text.word_glyphs(run, f.first as usize..f.end as usize) {
+                    draw.ids.push(id);
+                    draw.positions.push(pos);
+                }
+                if start != draw.ids.len() {
+                    let pos = [
+                        f.baseline[0] + space.origin[0],
+                        f.baseline[1] + space.origin[1],
+                    ];
+                    draw.push(Command::Glyphs {
+                        pos,
+                        clip: Some(space.clip.paint_clip(space.plane != 0)),
+                        bounds: space.clip,
+                        face: run.metrics.face,
+                        size: run.metrics.size,
+                        color: brush,
+                        range: start..draw.ids.len(),
+                    });
+                    draw.rules(
+                        source_ctx.rules,
+                        brush,
+                        pos,
+                        f.width,
+                        run.metrics.size,
+                        space.clip.paint_clip(space.plane != 0),
+                    );
+                }
+            }
+        };
+        if owner != source
+            && let Some(alpha) = e.attrs[source].opacity
+        {
+            if part == Part::Whole {
+                for (_, r) in lines(span) {
+                    decoration(draw, r, Phase::Under);
+                }
+            }
+            if alpha != 0 {
+                let inner = draw.begin_group(alpha);
+                for (line, r) in lines(span) {
+                    glyphs(draw, line, r);
+                }
+                draw.end_group(inner, l.viewport);
+            }
+            for (_, r) in lines(span) {
+                decoration(draw, r, Phase::Border);
+            }
+        } else {
+            for (line, r) in lines(span) {
+                if part == Part::Whole {
+                    decoration(draw, r, Phase::Under);
+                }
+                glyphs(draw, line, r);
+                decoration(draw, r, Phase::Border);
             }
         }
     }

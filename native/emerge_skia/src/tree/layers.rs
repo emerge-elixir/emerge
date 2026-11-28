@@ -224,6 +224,10 @@ impl LayoutContext {
 #[derive(Default)]
 pub(super) struct Layers {
     jobs: [WorkSet; PASSES.len()],
+    // Later layout ranks share a single membership/link table. Each dirty
+    // occurrence has one entry, irrespective of the number of dirty phases.
+    deferred: Option<WorkSet<u8>>,
+    rank: u16,
     constrained: constrained::Constrained,
     context: SecondaryMap<Key, LayoutContext>,
     measure: SecondaryMap<Key, Demand>,
@@ -256,6 +260,8 @@ pub(super) struct Layers {
     pub(super) parts: SecondaryMap<Key, Composition>,
     pub(super) viewport: Rect,
     pub(super) scale_declarations: usize,
+    #[cfg(test)]
+    draining: Option<Pass>,
     #[cfg(test)]
     pub trace: Vec<(Pass, u64, Outputs)>,
     #[cfg(test)]
@@ -515,8 +521,24 @@ impl Layers {
         self.owners = capacity;
         Ok(())
     }
-    // Queue an already classified phase; keep the old value for comparison.
+    pub fn reserve_ranks(&mut self, keys: usize, mounts: usize) -> Result<(), String> {
+        if mounts != 0 {
+            self.deferred
+                .get_or_insert_default()
+                .reserve(keys, mounts.min(MAX_DEPTH) + 1)?;
+        }
+        Ok(())
+    }
+    // Queue an already classified phase in the active rank (or a paint phase).
     pub(super) fn invalidate(&mut self, p: Pass, k: Key, depth: usize) {
+        #[cfg(test)]
+        assert!(
+            self.draining
+                .is_none_or(|current| p as usize >= current as usize),
+            "{p:?} enqueued while draining {:?} in rank {}",
+            self.draining,
+            self.rank
+        );
         self.jobs[p as usize].push(depth, k, Outputs::Both);
     }
     pub fn invalidate_composition(&mut self, k: Key, depth: usize, outputs: Outputs) {
@@ -524,7 +546,8 @@ impl Layers {
     }
     #[cfg(test)]
     pub fn worksets_empty(&self) -> bool {
-        self.jobs.iter().all(WorkSet::is_empty)
+        self.deferred.as_ref().is_none_or(WorkSet::is_empty)
+            && self.jobs.iter().all(WorkSet::is_empty)
     }
     pub(super) fn begin_measure_inputs(&mut self, e: &Elements, root: Option<Key>) {
         self.constrained.begin(root.is_some_and(|k| {
@@ -644,10 +667,21 @@ impl Layers {
         self.parts.remove(k);
     }
     pub(super) fn enqueue(&mut self, p: Pass, k: Key, e: &Elements) {
-        if matches!(p, Measure | Flow | Reflow) {
-            self.invalidate_constraints(e, k);
+        let [depth, rank] = e.depths(k);
+        if (p as usize) < PaintContext as usize && rank != self.rank {
+            #[cfg(any(test, debug_assertions))]
+            assert!(rank > self.rank, "layout sent to a settled host");
+            self.deferred.as_mut().expect("reserved mount ranks").push(
+                usize::from(rank),
+                k,
+                1 << p as usize,
+            );
+        } else {
+            if matches!(p, Measure | Flow | Reflow) {
+                self.invalidate_constraints(e, k);
+            }
+            self.invalidate(p, k, usize::from(depth));
         }
-        self.invalidate(p, k, e.depth(k));
     }
     fn parent(&mut self, p: Pass, k: Key, e: &Elements) {
         if let Some(parent) = e.layout_parent(k) {
@@ -815,47 +849,87 @@ impl Layers {
             self.viewport = vp;
             self.enqueue(PaintContext, root, e);
         }
-        for pass in PASSES {
-            #[cfg(test)]
-            assert!(
-                self.jobs[..pass as usize].iter().all(WorkSet::is_empty),
-                "work sent back before {pass:?}"
-            );
-            if pass == Flow {
-                self.constrained.finish_measure();
+        // Only layout depends on the host having finished Place. Painting
+        // and composition still run once in ordinary ownership-depth order.
+        loop {
+            for &pass in &PASSES[..PaintContext as usize] {
+                self.drain(e, pass);
             }
-            while let Some((k, requested)) = self.jobs[pass as usize].pop(pass.direction()) {
-                if !e.slots.contains_key(k) {
-                    continue;
-                }
-                #[cfg(test)]
-                self.trace.push((pass, e.slots[k].id, requested));
-                match pass {
-                    Context => self.context(e, k),
-                    Measure => self.measure(e, k),
-                    Flow => self.flow(e, k),
-                    Reflow => self.reflow(e, k),
-                    Place => {
-                        let base = e.slots[k].parent.map_or(vp, |p| self.local_frames[p]);
-                        self.place(e, k, [base.x, base.y]);
-                    }
-                    PaintContext => self.paint_context(e, k),
-                    Compose => {
-                        if let Some(outputs) = paint::compose(
-                            e,
-                            k,
-                            &self.paint[k],
-                            self.runs.get(k),
-                            &mut self.parts,
-                            requested,
-                        ) && let Some(p) = e.slots[k].parent
-                        {
-                            self.invalidate_composition(p, e.depth(p), outputs)
-                        }
+            let Some(rank) = self.deferred.as_ref().and_then(WorkSet::first_depth) else {
+                break;
+            };
+            self.rank = rank as u16;
+            self.begin_measure_inputs(e, Some(root));
+            while let Some((k, mask)) = self.deferred.as_mut().and_then(|set| set.pop_at(rank)) {
+                for &p in &PASSES[..PaintContext as usize] {
+                    if mask & (1 << p as usize) != 0 {
+                        self.enqueue(p, k, e);
                     }
                 }
             }
         }
+        for pass in [PaintContext, Compose] {
+            self.drain(e, pass);
+        }
+        self.rank = 0;
+    }
+    fn drain(&mut self, e: &Elements, pass: Pass) {
+        #[cfg(test)]
+        assert!(
+            self.jobs[..pass as usize].iter().all(WorkSet::is_empty),
+            "work sent back before {pass:?}"
+        );
+        if pass == Flow {
+            self.constrained.finish_measure();
+        }
+        #[cfg(test)]
+        {
+            self.draining = Some(pass);
+        }
+        while let Some((k, requested)) = self.jobs[pass as usize].pop(pass.direction()) {
+            if !e.slots.contains_key(k) {
+                continue;
+            }
+            #[cfg(test)]
+            {
+                assert!((pass as usize) >= PaintContext as usize || self.rank == e.depths(k)[1]);
+                self.trace.push((pass, e.slots[k].id, requested));
+            }
+            match pass {
+                Context => self.context(e, k),
+                Measure => self.measure(e, k),
+                Flow => self.flow(e, k),
+                Reflow => self.reflow(e, k),
+                Place => {
+                    let base = e.slots[k]
+                        .parent
+                        .map_or(self.viewport, |p| self.local_frames[p]);
+                    self.place(e, k, [base.x, base.y]);
+                }
+                PaintContext => self.paint_context(e, k),
+                Compose => {
+                    if let Some(outputs) = paint::compose(
+                        e,
+                        k,
+                        &self.paint[k],
+                        self.runs.get(k),
+                        &mut self.parts,
+                        requested,
+                    ) && let Some(p) = e.slots[k].parent
+                    {
+                        self.invalidate_composition(p, e.depth(p), outputs)
+                    }
+                }
+            }
+        }
+        #[cfg(test)]
+        {
+            self.draining = None;
+        }
+    }
+    #[cfg(test)]
+    pub fn flow_width(&self, k: Key) -> f32 {
+        self.width[k].outer
     }
     pub(super) fn reads_early_height(e: &Elements, k: Key) -> bool {
         let b = e.attrs[k].sizing;
@@ -863,18 +937,6 @@ impl Layers {
             || (e.slots[k].shape == Shape::WrappedColumn
                 && !matches!(b.width, Length::Px(_))
                 && b.height.weight().is_some())
-    }
-    pub(super) fn invalidate_nearby_heights(&mut self, e: &Elements, k: Key) {
-        if !e.slots[k].stats.mount_needs[1] {
-            return;
-        }
-        for (slot, child) in e.nearby(k) {
-            if slot.host_height() && e.slots[child].stats.reads_anchor[1] {
-                for pass in [Context, Measure, Flow] {
-                    self.enqueue(pass, child, e);
-                }
-            }
-        }
     }
     pub(super) fn invalidate_early_heights(&mut self, e: &Elements, p: Key) {
         for &c in e.children(p) {
@@ -909,12 +971,9 @@ impl Layers {
             return Some(Constraint::Available(self.root_height(e, k)));
         };
         if let Some(slot) = e.slots[k].slot {
-            return match e.attrs[p].sizing.height {
-                Length::Px(n) if slot.host_height() => {
-                    Some(Constraint::Available(pixels(n, e.slots[p].admitted.scale)))
-                }
-                _ => None,
-            };
+            return slot
+                .host_height()
+                .then(|| Constraint::Available(self.local_frames[p].height));
         }
         // A span's declared height contributes demand, not an allocation for its Text.
         if self.context[p].inline_host.is_some() {
@@ -1037,7 +1096,6 @@ impl Layers {
                 self.enqueue(Measure, k, e);
             }
             if scale_changed {
-                self.invalidate_nearby_heights(e, k);
                 if e.attrs[k].sizing.padding != [0.; 4]
                     && let Some(p) = inline_host
                 {
@@ -1408,7 +1466,7 @@ impl Layers {
                 k,
                 WidthOffer {
                     axis: if slot.host_width() {
-                        Constraint::Available(self.width[p].outer)
+                        Constraint::Available(self.local_frames[p].width)
                     } else {
                         Constraint::Natural
                     },
@@ -1429,13 +1487,6 @@ impl Layers {
         let old = self.width.insert(k, width);
         if old.is_none_or(|w| w.outer != outer || w.inner != inner) {
             self.enqueue(Reflow, k, e);
-        }
-        if old.is_none_or(|w| w.outer != outer) {
-            for (slot, c) in e.nearby(k) {
-                if slot.host_width() && self.reads_width_offer(e, c) {
-                    self.enqueue(Flow, c, e);
-                }
-            }
         }
         let offer_children = old
             .is_none_or(|w| w.inner != inner || w.new_edge || w.child_height != width.child_height);
@@ -1627,6 +1678,14 @@ impl Layers {
             let dw = old.is_none_or(|f| f.width != width);
             let dh = old.is_none_or(|f| f.height != height);
             for (slot, c) in e.nearby(k) {
+                if dw && slot.host_width() && self.reads_width_offer(e, c) {
+                    self.enqueue(Flow, c, e);
+                }
+                if dh && slot.host_height() && e.slots[c].stats.reads_anchor_height {
+                    for p in [Context, Measure, Flow] {
+                        self.enqueue(p, c, e);
+                    }
+                }
                 if origin_changed || slot.reads_placement(dw, dh, &e.attrs[c]) {
                     self.enqueue(Place, c, e);
                 }

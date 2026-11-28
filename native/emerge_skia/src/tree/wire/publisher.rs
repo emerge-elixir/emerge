@@ -104,7 +104,20 @@ impl Capacity {
         // secondary-map slots, glyph overlap and paragraph/clip scratch.
         // Keep the credit pinned with any sealed readers after a growth.
         let units = [
-            4096, 4096, 160, 8192, 1536, 4096, 6, 128, 2048, 128, 128, 1024, 4096, 1536,
+            4096 + 32 * usize::from(mounts != 0),
+            4096,
+            160,
+            8192,
+            1536,
+            4096,
+            6,
+            128,
+            2048,
+            128,
+            320,
+            1024,
+            4096,
+            1536,
         ];
         let charge = self
             .0
@@ -122,13 +135,14 @@ impl Capacity {
         e.ids.try_reserve(owners).map_err(pool::capacity_error)?;
         pool::reserve(&mut e.touched, owners)?;
         t.layers.reserve(keys, owners)?;
+        t.layers.reserve_ranks(keys, mounts)?;
         t.layers.text.ensure(2 * glyphs, owners, Budget(0))?;
         t.output.reserve_for(
             owners,
             glyphs,
             words,
             extra,
-            groups + mounts + scrolls,
+            groups + 3 * mounts + scrolls,
             Budget(0),
         )?;
         t.layers.scroll.reserve(scrolls)?;

@@ -17,7 +17,7 @@ other records and child orders; changing a wide child order can cost its length.
 The [tree actor](../../native/emerge_skia/src/session/tree_actor.rs) folds a finite
 prefix of at most two publications, combines their changes with resize, asset
 completion and any due pose sample, then invalidates once and computes in
-dependency order: Context → Measure → Flow → Reflow → Place, then paint context and composition. A [height at a proved width](../../native/emerge_skia/src/tree/layers/constrained.rs) can supply an intrinsic charge; an edited paragraph produces its actual fragments once at its final width and bands. Flow does not reopen after Reflow. The actor seals drawing and hits with their frame ID, surface geometry
+dependency order: Context → Measure → Flow → Reflow → Place for each dirty layout rank, then paint context and composition once. Rank counts Nearby mount edges, not ordinary ancestors or paint bands. A [height at a proved width](../../native/emerge_skia/src/tree/layers/constrained.rs) can supply an intrinsic charge; an edited paragraph produces its actual fragments once at its final width and bands. No rank reopens Flow after Reflow. The actor seals drawing and hits with their frame ID, surface geometry
 and callback epoch. Pinned readers can delay packing without delaying layout.
 The draw thread takes the newest eligible **unstarted commands**. Separately,
 the [presenter](../../native/emerge_skia/src/session/presentation.rs) takes the
@@ -26,7 +26,7 @@ can be handed off; finishing C cannot change an already claimed B.
 
 A [scrollport](../../native/emerge_skia/src/tree/scroll.rs) projects a live fraction onto the overflow of its ordinary children's settled layout boxes. Target jumps read that unscrolled geometry after Place. Wheel, pan and thumb motion need only paint context and composition: content moves; the scroller, its chrome and its own mounted panels don't. The display interprets input against the installed regions and posts absolute, attachment-qualified positions to the tree actor; it never waits for those positions to be drawn. See [installed scrolling](events.md#retained-scroll-dispatch).
 
-A [Nearby mount](nearby-semantics.md) is an ownership edge, not an ordinary layout child. When packing a changed drawing or hit stream, the same layer traversal defers escaping panels and finishes all peer menus before their tooltips. A clean stream keeps its sealed buffer. No dedicated layout pass or render surface is needed for a layer.
+A [Nearby mount](nearby-semantics.md) is an ownership edge, not an ordinary layout child. All six slots use the host's placed local border box. A dirty mounted branch reads this box even if its host did not run layout. In a paragraph, one El owns every continuation of its inline Text and each declared panel is visited once per changed stream. The [paint traversal](../../native/emerge_skia/src/tree/paint.rs) defers escaping panels and finishes peer menus before their tooltips, independently of layout rank. A clean stream keeps its sealed buffer. No render surface or separate installation is needed for a layer.
 
 Binary headless installs on delivery. Wayland shm attaches only the winner;
 GL samples its resolved share-group texture and Vulkan copies its resolved
