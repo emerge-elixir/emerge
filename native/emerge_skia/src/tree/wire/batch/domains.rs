@@ -106,13 +106,11 @@ impl Batch {
             if let Some(order) = order {
                 self.domains
                     .stack
-                    .extend(self.orders.get(&order).iter().map(|&id| (id, next)));
+                    .extend(self.orders.get(order).keys.iter().map(|&id| (id, next)));
             } else {
-                self.domains.stack.extend(
-                    e.children(old.unwrap())
-                        .iter()
-                        .map(|&k| (e.slots[k].id, next)),
-                );
+                self.domains
+                    .stack
+                    .extend(e.owned(old.unwrap()).iter().map(|&k| (e.slots[k].id, next)));
             }
         }
         Ok(())

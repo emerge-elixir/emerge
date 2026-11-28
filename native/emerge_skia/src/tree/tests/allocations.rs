@@ -43,6 +43,97 @@ impl Counter {
         )
     }
 }
+fn nearby_bands(c: &Counter) {
+    use nearby::mounted;
+    let n = MAX_DEPTH as u64 + 1;
+    let refs = (2..=n).map(|id| (6, id)).collect::<Vec<_>>();
+    let attrs = |id| block(&[px(1, 20.), px(2, 20.), color([id as u8, 0, 0]), vec![40, 1]]);
+    let root = block(&[
+        px(1, 20.),
+        px(2, 20.),
+        number(35, 0.5),
+        vec![77, 1],
+        number(33, 5.),
+    ]);
+    let mut r = Raster::default();
+    let full = upload(
+        &std::iter::once(mounted(node(1, 4, root, &[]), &refs))
+            .chain((2..=n).map(|id| node(id, 4, attrs(id), &[])))
+            .collect::<Vec<_>>(),
+    );
+    r.tree.upload(&full).unwrap();
+    c.zero(
+        "first Nearby bands, group, opted-in plane and installed inverse hit",
+        || {
+            r.settle(180., 170., 1.).unwrap();
+            r.install();
+            assert_eq!(r.hit_at(10., 10.).unwrap().0, n);
+        },
+    );
+    let root_order = |refs: &[(u8, u64)]| patch(1, 1, &[mounted(edges(1, 4, &[]), refs)]);
+    let reverse = refs.iter().copied().rev().collect::<Vec<_>>();
+    let deep = patch(
+        1,
+        1,
+        &(1..=n)
+            .map(|id| {
+                if id < n {
+                    mounted(edges(id, 4, &[]), &[(6, id + 1)])
+                } else {
+                    edges(id, 4, &[])
+                }
+            })
+            .collect::<Vec<_>>(),
+    );
+    let wide = patch(
+        1,
+        1,
+        &std::iter::once(mounted(edges(1, 4, &[]), &refs))
+            .chain((2..=n).map(|id| edges(id, 4, &[])))
+            .collect::<Vec<_>>(),
+    );
+    let role = patch(1, 1, &[mounted(edges(1, 4, &[n]), &refs[..refs.len() - 1])]);
+    let append = patch(
+        1,
+        1,
+        &[mounted(edges(1, 4, &[]), &refs), node(n, 4, attrs(n), &[])],
+    );
+    for (edit, winner) in [
+        (root_order(&reverse), 2),
+        (deep, n),
+        (wide, n),
+        (role, n - 1),
+        (root_order(&refs), n),
+        (patch(n, 0, &[]), n - 1),
+        (append, n),
+    ] {
+        c.zero(
+            "fitting Nearby reorder, depth change, role change or remount through installed hit",
+            || {
+                r.tree.patch(&edit).unwrap();
+                r.settle(180., 170., 1.).unwrap();
+                r.install();
+                assert_eq!(r.hit_at(10., 10.).unwrap().0, winner);
+            },
+        );
+    }
+    draw(&mut r);
+    let before = r.tree.encode();
+    let installed = r.pixels().to_vec();
+    let refs = (2..3002).map(|id| (6, id)).collect::<Vec<_>>();
+    let growth = patch(
+        1,
+        1,
+        &std::iter::once(mounted(edges(1, 4, &[]), &refs))
+            .chain((n + 1..3002).map(|id| node(id, 4, attrs(id), &[])))
+            .collect::<Vec<_>>(),
+    );
+    (c.fail_next_reserve)();
+    assert!(r.tree.patch(&growth).is_err());
+    assert_eq!(r.tree.encode(), before);
+    assert!(r.pixels() == installed);
+    assert_eq!(r.hit_at(10., 10.).unwrap().0, n);
+}
 fn nested_transforms(c: &Counter) {
     let mut r = Raster::default();
     let host = |angle| block(&[px(1, 100.), px(2, 120.), number(79, angle)]);
@@ -1153,6 +1244,7 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     });
     alignment_zones(&c);
     nested_transforms(&c);
+    nearby_bands(&c);
     let mut split = Raster::default();
     split.tree.upload(&transforms::split_prose()).unwrap();
     c.zero(

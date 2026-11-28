@@ -148,8 +148,32 @@ impl Planes {
         id.checked_sub(1).map(|i| self.0[i as usize])
     }
 }
+/// A stationary clip chain plus the coordinate breaks at which it applies.
+#[derive(Default, Clone, Copy, Debug, PartialEq)]
+pub(super) struct Coords {
+    pub mask: Mask,
+    pub plane: u32,
+}
+impl Coords {
+    pub fn clip(self, draw: &Drawing, canvas: &Canvas) {
+        let matrix = canvas.local_to_device();
+        let plane = draw.planes.get(self.plane);
+        if let Some(p) = plane {
+            draw.planes.enter(p, canvas, &draw.clips, OPEN);
+        }
+        draw.clips.apply(
+            self.mask,
+            plane.map_or(OPEN, |p| p.stop),
+            canvas,
+            0,
+            (0., 0.),
+        );
+        canvas.set_matrix(&matrix);
+    }
+}
 #[derive(Default, Clone, Copy, Debug, PartialEq)]
 pub(super) struct Scope {
+    pub guard: Coords, // shadows may drop ordinary clips, never an explicit escape clip
     pub mask: Mask,
     pub plane: u32,
     // A rounded inline continuation belongs to the wrapper, immediately

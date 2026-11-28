@@ -2,9 +2,9 @@
 
 Emerge has one layout engine. It sizes and places elements before any renderer executes the shared Skia draw commands. Layout support is tracked by element and rule, not by renderer or OS.
 
-**Latest layout change:** [Vertical alignment of inline children](inline-layout-rotation.md#vertical-alignment-on-one-line) uses the height of each child's own line. A static `UI.rotate/1` can make that line taller; `Transform.rotate/1` turns the phrase and its clicks without enlarging the slot.
+**Latest layout change:** All six [Nearby mounts](nearby-layers.md) anchor to a host's local border box without entering ordinary flow. Sibling menus share a layer, their tooltips sit above both menus, and the ancestor's overlay sits above the tooltips.
 
-**Linux test results:** For [inline rotation and vertical alignment](inline-layout-rotation.md#linux-verification), **287 native** and **41 focused Mix** tests passed. Ordinary Mix passed **887/942** with the same 55 named failures and 21 exclusions. The standalone **Text turns** demo verified installed pixels, compositor crops and local clicks on a private scale-1 Wayland raster seat. The [six-profile, stage-probe and three-presenter results](size.md#linux-qualification) are from the earlier Size change.
+**Linux test results:** [Nearby verification](nearby-layers.md#verification-and-limits): **302 native**, **93 focused Mix** and **898/945 ordinary**. Eight previous failures cleared; the other 47 failures and 21 exclusions are unchanged by name. Private Wayland raster, OpenGL and Vulkan windows verified installed capture, compositor pixels and routed clicks for the nested overlays. [Inline alignment](inline-layout-rotation.md#linux-verification) and [Size](size.md#linux-qualification) have their own results.
 
 **Selected work:** None.
 
@@ -26,8 +26,7 @@ The [DSL](../lib/emerge/ui.ex), [attribute codec](../lib/emerge/engine/attr_code
 [shape dispatch](../native/emerge_skia/src/tree/shapes.rs) distinguish what can
 be expressed from what can be drawn or receive input. **9 of 13** `main` kinds
 are ported. `svg/2` uses the existing Image kind; `wrapped_column/2` is a
-retained-only addition. The [alignment roadmap](alignment.md) covers sites that
-still need Nearby, scrolling or editors.
+retained-only addition. The [alignment roadmap](alignment.md) separates implemented box, inline and Nearby sites from scrolling and editor work.
 
 ### Image sources and sizing
 
@@ -46,6 +45,7 @@ The [reference comparisons](image-sizing-and-codecs.md#red-controls-before-imple
   [Inline widths](size.md#s2-document-and-paragraph-floats) can affect paragraph size without setting word height. The engine rejects [circular packs](size.md#s7-real-feedback-and-the-closing-audit) without changing the accepted tree or installed hits. The nine shared kinds accepted all 51 Size reference declarations; [48 matched the sampled raster measurements](size.md#reference-differences). `wrapped_column/2` has explicit expected sizes, not a `main` oracle.
 - **Spacing and alignment (`Space`, `Align`):** Padding, fixed or [even gaps](../test/emerge_skia/linear_even_spacing_test.exs), and [main- and cross-axis alignment](../test/emerge_skia/linear_zones_test.exs) work per line or column.
   A [paragraph span](inline-layout-rotation.md#vertical-alignment-on-one-line) aligns to the top, center or bottom of its own line, including beside a layout-turned phrase. An [El child](../test/emerge_skia/el_child_alignment_test.exs) can override either axis; an [aligned root](../test/emerge_skia/root_alignment_test.exs) stays at the origin. [Inactive even spacing](../test/emerge_skia/inactive_even_spacing_test.exs) and snap flags do not add geometry or font rounding.
+- **Nearby:** `behind_content` lies between the host's backdrop and content. `above`, `below`, `on_left`, `on_right` and `in_front` escape ordinary ancestor clips but respect the viewport and explicit `clip_nearby/0`. The panel aligns on its active axes, follows its host's pose, and does not move ordinary siblings. [Ordered mounts, installed pixels, blockers and local clicks](nearby-layers.md#verification-and-limits).
 - **Static layout rotation (`UI.rotate/1`):** Blocks and floats occupy their [turned border box](static-layout-transforms.md#layout-controls). A [Row or WrappedRow](size.md#s5-row-charges-and-wrappedrow-membership) uses the independently measured wrapped height when dividing space between siblings. On [inline Text or El→Text](inline-layout-rotation.md#reference-cases), the rotated phrase contributes its width and height to the line; its decoration, ink and hit region turn together.
 - **Static `Transform`:** Translation, rotation and uniform scale are **transforms that preserve sibling layout**. Ink can overlap a sibling; [clicks follow the installed shape and clips](../test/emerge_skia/static_transforms_test.exs), including on paragraph spans. Negative scale reverses both axes; zero scale removes ink and hits. `alpha/1` changes opacity, not hits.
 - **Images:** Bitmap and SVG leaves support [intrinsic size, aspect ratio and fill](#image-sources-and-sizing). BMP support is limited to the listed `BI_RGB` formats, GIF to frame zero and WebP to still images.
@@ -59,8 +59,7 @@ The [reference comparisons](image-sizing-and-codecs.md#red-controls-before-imple
 - **Text inputs (`Input.text/2`, `Input.multiline/2`):** Controlled editing and value echo, caret, selection, IME, and multiline wrapping and scrolling.
 - **Sliders (`Input.slider/2`, `Input.Slider.config/0,1`):** Controlled range, value and step; track, filled track and thumb; delivery of value changes.
 - **Video (`video/2`):** Size and fit a named video target and paint its latest frame. Sending headless frames *out* does not implement video input.
-- **Nearby overlays (`Nearby`, `clip_nearby/0`):** Elixir encodes all six positions (`behind_content`, `above`, `on_right`, `below`, `on_left`, `in_front`), but native layout rejects them.
-  Overlays need host-local anchoring, stacking, clipping, hit testing and stable identity on moves. In the `main` raster check, `below` turns with its host without moving the Row peer. [Scroller-owned and descendant overlays](https://github.com/emerge-elixir/emerge/pull/124) need separate paint, culling and input checks.
+- **Nearby anchor limits:** No single anchor for an inline continuation. A panel cannot read a host width first known in Place or project width from a host height first known in Reflow/Place. These declarations fail before acceptance. [Scroller-owned and descendant overlays](https://github.com/emerge-elixir/emerge/pull/124) still need scrolling, culling and input qualification.
 - **Scrolling (`Scroll`):** Scrollbars and interaction on both axes; `scroll_x/1` and `scroll_y/1` by fraction or key; resize and value echo; `on_scroll` position fractions. Elixir can resolve a key, but native content does not yet move.
 - **Fonts:** Letter spacing, word spacing, custom font loading and text layout inside editors.
 - **Element events and focus (`Event`, `focus_on_mount/0`):** Mouse down/up/enter/leave/move, press, drag/capture, directional swipes, key down/up/press, focus/blur, change, scroll and `virtual_key`. Button press and keyboard activation are also missing.

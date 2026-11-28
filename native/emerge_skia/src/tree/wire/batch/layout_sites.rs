@@ -14,7 +14,7 @@ impl Batch {
     }
     fn layout_children<'a>(&'a self, e: &'a Elements, id: u64) -> impl Iterator<Item = u64> + 'a {
         let (wire, resident): (&[u64], &[Key]) = match self.get(id).and_then(|s| s.order) {
-            Some(order) => (self.orders.get(&order), &[]),
+            Some(order) => (self.orders.get(order).children(), &[]),
             None => (&[], e.children(e.ids[&id])),
         };
         wire.iter()
@@ -23,8 +23,8 @@ impl Batch {
     }
     fn site_parent(&self, e: &Elements, id: u64) -> Option<u64> {
         self.get(id).map_or_else(
-            || e.slots[e.ids[&id]].parent.map(|p| e.slots[p].id),
-            |s| s.parent,
+            || e.layout_parent(e.ids[&id]).map(|p| e.slots[p].id),
+            |s| s.parent.filter(|_| s.slot.is_none()),
         )
     }
     fn inline_text(&self, e: &Elements, id: u64) -> bool {
@@ -87,6 +87,24 @@ impl Batch {
         }
     }
     pub(super) fn check_layout_sites(&self, e: &Elements) -> Result<()> {
+        // Includes changed resident ancestors of the patch target. Closed
+        // branch moves carry the counts, not a walk of their descendants.
+        for s in &self.entries {
+            if s.stats.mounts != 0 && self.inline_text(e, s.id) {
+                return Err("Nearby needs a block anchor, not a paragraph continuation".into());
+            }
+            if s.stats.mount_needs[1]
+                && s.shape == Shape::Paragraph
+                && self
+                    .site_parent(e, s.id)
+                    .is_some_and(|p| self.declaration(e, p).0 == Shape::TextColumn)
+            {
+                let (_, a) = self.declaration(e, s.id);
+                if !a.rotation.mixes_axes() && a.float_side().is_none() {
+                    return Err("Nearby height-dependent width needs an anchor known before document reflow".into());
+                }
+            }
+        }
         for &i in &self.post {
             let s = &self.entries[i];
             if s.shape == Shape::Text {

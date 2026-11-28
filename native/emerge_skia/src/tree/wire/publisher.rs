@@ -12,6 +12,7 @@ struct Totals {
     texts: usize,
     images: usize,
     groups: usize,
+    clip_nearby: usize,
     poses: usize,
     hosts: usize,
     words: usize,
@@ -30,6 +31,7 @@ impl Totals {
         count(&mut self.texts, usize::from(shape.uses_glyphs()));
         count(&mut self.images, usize::from(a.has_art()));
         count(&mut self.hosts, usize::from(shape.has_prose_sites()));
+        count(&mut self.clip_nearby, usize::from(a.clip_nearby));
         count(&mut self.groups, usize::from(a.opacity.is_some()));
         count(&mut self.poses, usize::from(a.pose_declared));
         count(&mut self.materials, usize::from(a.material()));
@@ -42,10 +44,10 @@ impl Totals {
 // declaration, not borrowed from a computing tree. In steady state a turn
 // carries no computed stores. Two glyph generations can overlap in measure.
 #[derive(Default, Clone, Copy)]
-struct Capacity([usize; 10]);
+struct Capacity([usize; 13]);
 impl Capacity {
-    fn for_tree(t: Totals, keys: usize) -> Self {
-        Self([
+    fn for_tree(t: Totals, keys: usize, tree: Subtree) -> Result<Self> {
+        Ok(Self([
             keys,
             t.nodes,
             t.glyphs,
@@ -54,13 +56,17 @@ impl Capacity {
             t.materials,
             t.material_bytes,
             t.groups,
-            t.poses,
+            t.poses * (1 + usize::from(tree.escapes != 0)),
+            tree.escapes,
+            tree.mounts,
+            t.clip_nearby,
             t.materials
+                + tree.extra_commands()?
                 + t.images
                 + 2 * t.groups
                 + if t.groups != 0 { 2 * t.words } else { 0 }
                 + if t.rules != 0 { 2 * t.texts } else { 0 },
-        ])
+        ]))
     }
     fn grow(&self, need: Self, b: Budget) -> Option<Self> {
         need.0.iter().zip(self.0).any(|(&n, old)| n > old).then(|| {
@@ -84,12 +90,17 @@ impl Capacity {
             bytes,
             groups,
             poses,
+            escapes,
+            mounts,
+            clip_nearby,
             extra,
         ] = self.0;
         // Conservative byte credits, including the builder, five readers,
         // secondary-map slots, glyph overlap and paragraph/clip scratch.
         // Keep the credit pinned with any sealed readers after a growth.
-        let units = [4096, 4096, 160, 8192, 1536, 4096, 6, 128, 2048, 1536];
+        let units = [
+            4096, 4096, 160, 8192, 1536, 4096, 6, 128, 2048, 128, 128, 1024, 1536,
+        ];
         let charge = self
             .0
             .iter()
@@ -108,9 +119,10 @@ impl Capacity {
         t.layers.reserve(keys, owners)?;
         t.layers.text.ensure(2 * glyphs, owners, Budget(0))?;
         t.output
-            .reserve_for(owners, glyphs, words, extra, groups, Budget(0))?;
+            .reserve_for(owners, glyphs, words, extra, groups + mounts, Budget(0))?;
+        t.output.reserve_bands(escapes, groups, Budget(0))?;
         t.output
-            .reserve_materials(keys, materials, bytes, words, Budget(0))?;
+            .reserve_materials(keys, materials, bytes, words, clip_nearby, Budget(0))?;
         t.layers
             .paragraphs
             .reserve(keys, owners, words, Budget(0))?;
@@ -289,11 +301,11 @@ impl Publisher {
                 t.sizes.add(n)?;
             }
         }
+        let tree = b.root_stats(e);
         if t.nodes > 1_000_000
-            || media
-                .bytes()
-                .saturating_add(t.raw + 18 * t.nodes + 8 * t.nodes.saturating_sub(1) + 25)
-                > MAX_BYTES
+            || media.bytes().saturating_add(
+                t.raw + 18 * t.nodes + 8 * t.nodes.saturating_sub(1) + tree.mounts + 25,
+            ) > MAX_BYTES
         {
             return Err("patched declarations exceed storage limit".into());
         }
@@ -315,7 +327,7 @@ impl Publisher {
         }
         e.ids.try_reserve(new).map_err(pool::capacity_error)?;
         pool::reserve(&mut e.free_indices, e.slots.capacity())?;
-        let demand = Capacity::for_tree(t, e.slots.capacity());
+        let demand = Capacity::for_tree(t, e.slots.capacity(), tree)?;
         let growth = self.capacity.grow(demand, self.budget);
         let workspace = growth
             .map(|c| c.provision(&self.storage.workspace))
@@ -325,7 +337,9 @@ impl Publisher {
         b.commit_strikes(&mut strikes);
         const RECORD: usize = size_of::<Record>() + 32;
         const BLOCK: usize = size_of::<Block>() + 48;
-        let order_size = |n: usize| size_of::<Order>() + 48 + n * size_of::<Key>();
+        let order_size = |edges: Edges<'_, u64>| {
+            size_of::<Order>() + 64 + size_of_val(edges.keys) + edges.tags.len()
+        };
         let touched = b.entries.len() + b.changed_inputs().count();
         let descriptors = rows.document.reserve(256 + touched * 96)?;
         let extent = b
@@ -336,7 +350,7 @@ impl Publisher {
                 s.attrs
                     .as_ref()
                     .map_or(0, |(_, r)| BLOCK + rows.raw(r).len())
-                    + s.order.map_or(0, |o| order_size(b.orders.get(&o).len()))
+                    + s.order.map_or(0, |o| order_size(b.orders.get(o)))
             })
             .sum::<usize>();
         let mut backing = rows.document.reserve(RECORD * touched + extent)?;
@@ -377,8 +391,12 @@ impl Publisher {
             let inputs = s.inputs.unwrap_or(m.admitted);
             if s.attrs.is_none()
                 && s.order.is_none()
-                && old
-                    .is_some_and(|r| r.parent == parent && r.stats == s.stats && r.inputs == inputs)
+                && old.is_some_and(|r| {
+                    r.parent == parent
+                        && r.slot == s.slot
+                        && r.stats == s.stats
+                        && r.inputs == inputs
+                })
             {
                 continue;
             }
@@ -409,10 +427,11 @@ impl Publisher {
             let children = s.order.map_or_else(
                 || old.unwrap().children.clone(),
                 |order| {
-                    let ids = b.orders.get(&order);
+                    let edges = b.orders.get(order);
                     Arc::new(Order {
-                        keys: ids.iter().map(|id| e.ids[id]).collect(),
-                        _grant: backing.split(order_size(ids.len())),
+                        keys: edges.keys.iter().map(|id| e.ids[id]).collect(),
+                        tags: edges.tags.into(),
+                        _grant: backing.split(order_size(edges)),
                     })
                 },
             );
@@ -428,6 +447,7 @@ impl Publisher {
                 id: s.id,
                 shape: s.shape,
                 parent,
+                slot: s.slot,
                 stats: s.stats,
                 inputs,
                 index: m.index,
@@ -449,6 +469,7 @@ impl Publisher {
                 id,
                 shape: old.shape,
                 parent: old.parent,
+                slot: old.slot,
                 stats: old.stats,
                 index: old.index,
                 block: old.block.clone(),
@@ -531,6 +552,7 @@ impl Publisher {
         for (k, r) in d.writes {
             let m = &mut e.slots[k];
             m.parent = r.parent;
+            m.slot = r.slot;
             m.admitted = r.inputs;
             m.stats = r.stats;
         }
@@ -599,13 +621,14 @@ impl Publication {
                 e.ids.insert(r.id, k);
             }
             let m = &mut e.slots[k];
-            if m.parent != r.parent {
-                m.change.old_parent.get_or_insert(m.parent);
+            if (m.parent, m.slot) != (r.parent, r.slot) {
+                m.change.old_parent.get_or_insert((m.parent, m.slot));
             }
             if !m.change.cold && m.change.before.is_none() {
                 m.change.before = old.get(k).cloned();
             }
             m.parent = r.parent;
+            m.slot = r.slot;
             m.stats = r.stats;
             m.admitted = r.inputs;
             m.change.membership |= c.membership;

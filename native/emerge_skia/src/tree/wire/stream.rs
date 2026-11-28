@@ -10,6 +10,7 @@ struct Row {
     tag: u8,
     attrs: Option<Vec<u8>>,
     order: Option<Vec<u64>>,
+    mounted: Vec<[u8; 9]>,
 }
 pub(crate) struct Rows {
     pub(super) document: storage::Allowance,
@@ -28,6 +29,7 @@ enum Field {
     Count,
     Child,
     Nearby,
+    Mount,
     Done,
 }
 pub(crate) struct Stream {
@@ -100,6 +102,7 @@ impl Stream {
                 Field::RawSize => 4,
                 Field::Count | Field::Nearby => 2,
                 Field::Child => 8,
+                Field::Mount => 9,
                 Field::Done => return Err("trailing patch bytes".into()),
                 Field::Raw => {
                     let n = self.left.min(data.len());
@@ -215,10 +218,34 @@ impl Stream {
                     };
                 }
                 Field::Nearby => {
-                    if r.count()? != 0 {
-                        return Err("Nearby is not in the first slice".into());
+                    self.left = r.count()?;
+                    if self.left > (self.size - self.offset) / 9 {
+                        return Err("truncated EMRG data".into());
                     }
-                    self.row_end();
+                    if self.left == 0 {
+                        self.row_end();
+                    } else {
+                        self.rows
+                            .records
+                            .last_mut()
+                            .unwrap()
+                            .mounted
+                            .try_reserve_exact(self.left)
+                            .map_err(pool::capacity_error)?;
+                        self.field = Field::Mount;
+                    }
+                }
+                Field::Mount => {
+                    self.rows
+                        .records
+                        .last_mut()
+                        .unwrap()
+                        .mounted
+                        .push(r.array()?);
+                    self.left -= 1;
+                    if self.left == 0 {
+                        self.row_end();
+                    }
                 }
                 _ => unreachable!(),
             }
@@ -304,8 +331,7 @@ impl Rows {
                 b.entries[i].attrs = Some((a, index..index + 1));
             }
             if let Some(order) = &row.order {
-                shape.check_children(order.len())?;
-                b.order(i, order.len(), order.iter().copied(), budget)?;
+                b.wire_order(i, order.len(), order.iter().copied(), &row.mounted, budget)?;
             }
         }
         b.prove(e, prev, target, (root != 0).then_some(root), budget)

@@ -51,8 +51,9 @@ record keeps its entire live subtree from the last **accepted** declaration.
 Only that reference or a kept edge list closes a branch; kept attributes do
 not. IDs must be positive, uniquely owned and inside the target if already
 live. Definitions can precede or follow their parents. Extra definitions,
-cycles, double owners, outside or detached captures are invalid. Nearby is
-representable in Elixir; native support is limited to the ported shapes/edges.
+cycles, double owners, outside or detached captures are invalid. Both ingress
+paths accept all six Nearby tags at [supported anchor sites](nearby-semantics.md#slot-geometry).
+The tag belongs to the edge, not the ID. Distinct mounts may have the same tag.
 
 ## Attribute Block
 

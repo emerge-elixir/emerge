@@ -1,6 +1,6 @@
 # Alignment on the retained renderer
 
-**A1–A9, single-line F1–F2, paragraph P1–P3 and TextColumn T1–T2 are implemented.** Plain and wrapped Row/Column children support [start, center and end groups](../guides/internals/retained-decisions.md#d11-place-alignment-groups-without-changing-stacking). A [direct child of El](../test/emerge_skia/el_child_alignment_test.exs) can override either axis. An [aligned root](../test/emerge_skia/root_alignment_test.exs) stays at `(0,0)`; its own child-placement rules still apply. All four linear hosts can [distribute even gaps after sizing each group](../guides/internals/retained-decisions.md#d12-distribute-even-gaps-after-sizing-each-linear-group).
+**Implemented:** A1–A9, single-line F1–F2, paragraph P1–P3, TextColumn T1–T2 and [Nearby N1–N3](nearby-layers.md) on supported block anchors. Plain and wrapped Row/Column children support [start, center and end groups](../guides/internals/retained-decisions.md#d11-place-alignment-groups-without-changing-stacking). A [direct child of El](../test/emerge_skia/el_child_alignment_test.exs) can override either axis. An [aligned root](../test/emerge_skia/root_alignment_test.exs) stays at `(0,0)`; its own child-placement rules still apply. All four linear hosts can [distribute even gaps after sizing each group](../guides/internals/retained-decisions.md#d12-distribute-even-gaps-after-sizing-each-linear-group).
 
 This is a roadmap, not a selection. The remaining sites depend on other features. Put only one slice in the [parity tracker's selected slot](api-parity.md).
 
@@ -31,13 +31,13 @@ For the reference algorithms inspect `git show aef5e42:native/emerge_skia/src/tr
 
 **T1–T2 delivered:** [TextColumn](checkpoints/layout/text-column.md) centers ordinary blocks, carries explicit side floats across paragraphs and clears a non-paragraph block below them. It doesn't import Column's vertical zones or even gaps. The document positions the paragraph before aligning lines within the surviving band.
 
-The following are **separate slices once their prerequisite exists**. Do not count a decoded attr on an unimplemented kind. See the [Nearby slot contract](../lib/emerge/ui/nearby.ex).
+**N1–N3 delivered** for [supported block anchors](nearby-layers.md). The six-slot [public test](../test/emerge_skia/nearby_layers_test.exs) compares complete RGBA frames and local clicks before and after moving the padded host. S1 and E1–E2 remain separate slices; a decoded attr on an unimplemented kind doesn't count.
 
-| Slice | Prerequisite | Observable result and stopping point |
+| Slice | Status or prerequisite | Observable result and stopping point |
 | --- | --- | --- |
-| N1. Above/below alignment | Above/below mounts can submit pixels and receive input | Align the nearby root in **host frame width** on X; the slot fixes Y. Host `(10,20,80,40)`, panel `20×10`: centered below → `(40,60)`. Host padding is not a second offset. |
-| N2. Side alignment | Left/right mounts | Use host frame height on Y; slot fixes X. Same boxes: centered `on_right` → `(90,35)`. Test escape, clipping and panel-local clicks after moving the host. |
-| N3. Overlay alignment | Front/behind mounts and their stacking/hit scopes | Use both axes: right/bottom → `(70,50)`. Keep front blocking and behind-content ordering; don't insert either panel in the ordinary child zones. |
+| N1. Above/below alignment | Implemented on block anchors | Align the nearby root in **host frame width** on X; the slot fixes Y. Host `(10,20,80,40)`, panel `20×10`: centered below → `(40,60)`. Host padding is not a second offset. |
+| N2. Side alignment | Implemented on block anchors | Use host frame height on Y; slot fixes X. Same boxes: centered `on_right` → `(90,35)`. Test escape, clipping and panel-local clicks after moving the host. |
+| N3. Overlay alignment | Implemented on block anchors | Use both axes: right/bottom → `(70,50)`. Keep front blocking and behind-content ordering; don't insert either panel in the ordinary child zones. |
 | S1. Scrollable Column zones | Scrolling with installed clip/offset | Bottom group is **in the content flow**, not a sticky viewport footer. In a 100px column, top 20, bottom 10, gap zero: test y=20 with scrolling enabled versus y=90 without. Add overflow and real scrolling; check center and mixed zones, content extent and clicks after scroll. |
 | E1. Single-line editor contents | Text input, caret and selection | Left/center/right must use one text origin for ink, caret, selection, preedit and pointer-to-index. Put a click on a known character after changing alignment; confirm caret and submitted edit. |
 | E2. Multiline editor contents | Multiline wrapping/scrolling and E1 | Align **each** line including short last lines. A click at the same x on lines of different widths must resolve using that line's origin; confirm wrapped selection and caret after scroll. |

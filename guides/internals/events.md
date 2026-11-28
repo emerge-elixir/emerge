@@ -1,6 +1,6 @@
 # Events System
 
-This document describes the current event architecture used by EmergeSkia.
+The registry and event actor below describe the reference renderer. For retained binary headless and Wayland, see [frame installation](layout-refresh-render-flow.md#current-retained-path-binary-headless-and-wayland) and [Nearby clicks and blockers](nearby-semantics.md#paint-and-hits).
 
 ## Overview
 
@@ -884,7 +884,7 @@ They are retained tree/runtime state used by layout/style merging.
 
 ## Nearby Status
 
-Nearby now participates in the retained tree/event model.
+In the reference registry:
 
 - nearby mounts are retained on host elements, not decoded ad hoc during render
 - layout computes nearby frames once and shares them with render, hit testing,

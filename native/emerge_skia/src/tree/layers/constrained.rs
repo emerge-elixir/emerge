@@ -439,7 +439,7 @@ impl Layers {
             if let Some(i) = self.constrained.inputs.get_mut(k) {
                 i.valid = false;
             }
-            let Some(p) = e.slots[k].parent else { break };
+            let Some(p) = e.layout_parent(k) else { break };
             if e.measures_at_width(p, k) {
                 self.invalidate(Measure, p, e.depth(p));
             }

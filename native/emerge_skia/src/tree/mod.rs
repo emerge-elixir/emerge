@@ -6,7 +6,9 @@ mod decoration;
 mod images;
 mod intrinsic;
 mod layers;
+mod nearby;
 mod paint;
+use nearby::{Edges, OrderSpan, Orders, Slot};
 mod paragraph;
 mod pool;
 mod queue;
@@ -354,6 +356,7 @@ struct Attrs {
     pose_declared: bool, // reserve a scope even at an authored identity endpoint
     rotation: Rotation,
     image_host_clip: bool,
+    clip_nearby: bool,
     opacity: Option<u8>,
     decor: decoration::Decor,
     font_gradient: decoration::Bytes,
@@ -408,6 +411,15 @@ struct Subtree {
     count: usize,
     height: usize,
     direct: usize,
+    mounted_constraints: bool,
+    // Admission facts, not intrinsic/layout demand. An attrs-only edit can
+    // disprove an anchor without visiting the host's other panels.
+    reads_anchor: [bool; 2],
+    mount_needs: [bool; 2],
+    mounts: usize,
+    escapes: usize,
+    child_group_runs: usize,
+    group_runs: usize,
     // Cache the children's union separately: an attrs-only edit never needs
     // to reopen a kept order to prove its own layout dependencies.
     own: rotation::Dependencies,
@@ -419,19 +431,36 @@ impl Default for Subtree {
             count: 1,
             height: 0,
             direct: 0,
+            mounted_constraints: false,
+            reads_anchor: [false; 2],
+            mount_needs: [false; 2],
+            mounts: 0,
+            escapes: 0,
+            child_group_runs: 0,
+            group_runs: 0,
             own: Default::default(),
             children: Default::default(),
         }
     }
 }
 impl Subtree {
-    fn over(children: impl Iterator<Item = Self>) -> Self {
-        children.fold(Self::default(), |s, c| Self {
-            count: s.count + c.count,
-            height: s.height.max(1 + c.height),
-            direct: s.direct + 1,
-            children: s.children.union(c.own),
-            own: Default::default(),
+    fn over(owned: impl Iterator<Item = (Option<Slot>, Self)>) -> Self {
+        owned.fold(Self::default(), |mut s, (slot, c)| {
+            s.count += c.count;
+            s.height = s.height.max(1 + c.height);
+            s.mounted_constraints |=
+                c.mounted_constraints || (slot.is_some() && c.own.constrained_measure);
+            s.mounts += c.mounts + usize::from(slot.is_some());
+            s.escapes += c.escapes + usize::from(slot.is_some_and(Slot::escapes));
+            s.child_group_runs += c.group_runs;
+            if let Some(slot) = slot {
+                s.mount_needs[0] |= slot.host_width() && c.reads_anchor[0];
+                s.mount_needs[1] |= slot.host_height() && c.reads_anchor[1];
+            } else {
+                s.direct += 1;
+                s.children = s.children.union(c.own);
+            }
+            s
         })
     }
 }
@@ -440,6 +469,7 @@ struct Mount {
     id: u64,
     shape: Shape,
     parent: Option<Key>,
+    slot: Option<Slot>,
     depth: Cell<(u64, usize)>,
     stats: Subtree,
     // Resource inputs of the last accepted declaration, not installed geometry.
@@ -450,7 +480,7 @@ struct Mount {
     attachment: u64,
     ink_revision: u64,
     change: changes::Change,
-    children: Span<Key>,
+    children: OrderSpan<Key>,
     bytes: Span<u8>,
 }
 #[derive(Default)]
@@ -458,7 +488,7 @@ struct Elements {
     slots: declaration::Mounts,
     ids: HashMap<u64, Key>,
     attrs: declaration::Attributes,
-    child_pool: Pool<Key>,
+    orders: Orders<Key>,
     bytes: Pool<u8>,
     touched: Vec<Key>,
     images: images::Images,
@@ -490,8 +520,12 @@ impl Elements {
     fn attached_count(&self) -> usize {
         self.slots.len() - self.detached.len()
     }
+    fn layout_parent(&self, k: Key) -> Option<Key> {
+        let m = &self.slots[k];
+        m.parent.filter(|_| m.slot.is_none())
+    }
     fn parent_shape(&self, k: Key) -> Option<Shape> {
-        self.slots[k].parent.map(|p| self.slots[p].shape)
+        self.layout_parent(k).map(|p| self.slots[p].shape)
     }
     fn float_side(&self, k: Key) -> Option<Alignment> {
         self.attrs[k].float_side()
@@ -513,7 +547,7 @@ impl Elements {
     }
     /// The paragraph owns a direct non-float and, for an El, its text source.
     fn inline_host(&self, k: Key) -> Option<Key> {
-        let p = self.slots[k].parent?;
+        let p = self.layout_parent(k)?;
         if self.slots[p].shape == Shape::Paragraph {
             return self.float_side(k).is_none().then_some(p);
         }
@@ -526,19 +560,27 @@ impl Elements {
     fn alignment(&self, k: Key, axis: usize) -> Alignment {
         self.attrs[k].align[axis]
             .or_else(|| {
-                self.slots[k]
-                    .parent
+                self.layout_parent(k)
                     .filter(|&p| self.slots[p].shape == Shape::El)
                     .and_then(|p| self.attrs[p].align[axis])
             })
             .unwrap_or_default()
     }
-    fn children(&self, key: Key) -> &[Key] {
+    fn order(&self, k: Key) -> Edges<'_, Key> {
         if let Some(v) = &self.attrs.version {
-            &v.get(key).expect("declared owner").children
+            v.get(k).expect("declared owner").children.edges()
         } else {
-            self.child_pool.get(&self.slots[key].children)
+            self.orders.get(self.slots[k].children)
         }
+    }
+    fn children(&self, k: Key) -> &[Key] {
+        self.order(k).children()
+    }
+    fn nearby(&self, k: Key) -> impl DoubleEndedIterator<Item = (Slot, Key)> + '_ {
+        self.order(k).nearby()
+    }
+    fn owned(&self, k: Key) -> &[Key] {
+        self.order(k).keys
     }
     fn raw(&self, key: Key) -> &[u8] {
         if let Some(v) = &self.attrs.version {

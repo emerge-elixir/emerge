@@ -48,13 +48,14 @@ defmodule Emerge.UI.Nearby do
 
   ## Paint Order
 
-  Same-host nearby content follows definition order, so later nearby attrs on
-  the same host paint above earlier nearby attrs when they overlap.
+  On one host, later escaping overlays paint above earlier ones where they
+  overlap, regardless of slot. `behind_content/1` stays below the host's
+  content; multiple behinds also paint in definition order.
 
-  Between different hosts, nearby follows the same paint order used by normal
-  content. Nearby on later sibling branches paints above nearby on earlier
-  sibling branches, and nearby attached to an ancestor host paints above nearby
-  attached deeper in that host subtree.
+  Menus on sibling hosts share a layer: where they overlap, the later sibling's
+  menu wins. A tooltip attached to either menu sits above both menus. An
+  `in_front/1` overlay on their common ancestor sits above the tooltips. Adding
+  an ordinary wrapper around a menu host does not raise or lower its menu.
 
   ## Pointer Hit Testing
 

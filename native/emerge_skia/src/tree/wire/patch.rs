@@ -8,6 +8,8 @@ struct Demand {
     live_bytes: usize,
     raw: usize,
     edges: usize,
+    tags: usize,
+    clip_nearby: usize,
     texts: usize,
     scales: usize,
     prose_hosts: usize,
@@ -30,7 +32,9 @@ impl Demand {
             live: e.attached_count(),
             live_bytes: e.live_bytes,
             raw: e.bytes.len(),
-            edges: e.child_pool.len(),
+            edges: e.orders.keys.len(),
+            tags: e.orders.tags.len(),
+            clip_nearby: t.output.clip_nearby,
             texts: t.layers.text_count,
             scales: t.layers.scale_declarations,
             prose_hosts: t.layers.paragraphs.hosts,
@@ -54,8 +58,11 @@ impl Demand {
                 .attrs
                 .as_ref()
                 .map_or(0, |(_, s)| e.bytes.get(s).len());
-        self.edges -=
-            e.children(k).len() + m.change.order.map_or(0, |s| e.child_pool.get(&s).len());
+        for s in [Some(m.children), m.change.order].into_iter().flatten() {
+            let edges = e.orders.get(s);
+            self.edges -= edges.keys.len();
+            self.tags -= edges.tags.len();
+        }
     }
 }
 fn set_bound(
@@ -154,6 +161,7 @@ impl Tree {
                 d.texts -= usize::from(e.slots[k].shape.uses_glyphs());
                 d.prose_hosts -= usize::from(e.slots[k].shape.has_prose_sites());
                 d.images -= usize::from(e.attrs[k].has_art());
+                d.clip_nearby -= usize::from(e.attrs[k].clip_nearby);
                 d.groups -= usize::from(e.attrs[k].opacity.is_some());
                 d.poses -= usize::from(e.attrs[k].pose_declared);
                 d.materials -= usize::from(e.attrs[k].material());
@@ -214,6 +222,7 @@ impl Tree {
             d.texts += usize::from(s.shape.uses_glyphs());
             d.prose_hosts += usize::from(s.shape.has_prose_sites());
             d.images += usize::from(a.has_art());
+            d.clip_nearby += usize::from(a.clip_nearby);
             d.groups += usize::from(a.opacity.is_some());
             d.poses += usize::from(a.pose_declared);
             d.materials += usize::from(a.material());
@@ -246,9 +255,12 @@ impl Tree {
                 }
                 if let Some(span) = s.order {
                     if m.change.cold || m.change.order.is_some() {
-                        d.edges -= e.children(k).len();
+                        d.edges -= e.owned(k).len();
+                        d.tags -= e.order(k).tags.len();
                     }
-                    d.edges += b.orders.get(&span).len();
+                    let order = b.orders.get(span);
+                    d.edges += order.keys.len();
+                    d.tags += order.tags.len();
                 }
                 if s.inserted
                     || (s.shape.uses_glyphs()
@@ -262,14 +274,17 @@ impl Tree {
                 d.resident += 1;
                 d.new_ids += 1;
                 d.raw += len;
-                d.edges += b.orders.get(&s.order.unwrap()).len();
+                let order = b.orders.get(s.order.unwrap());
+                d.edges += order.keys.len();
+                d.tags += order.tags.len();
                 d.new_glyphs += a.glyph_count;
             }
         }
+        let tree = b.root_stats(e);
         if d.live > 1_000_000
-            || media_bytes
-                .saturating_add(d.live_bytes + 18 * d.live + 8 * d.live.saturating_sub(1) + 25)
-                > MAX_BYTES
+            || media_bytes.saturating_add(
+                d.live_bytes + 18 * d.live + 8 * d.live.saturating_sub(1) + tree.mounts + 25,
+            ) > MAX_BYTES
         {
             return Err("patched declarations exceed storage limit".into());
         }
@@ -277,7 +292,8 @@ impl Tree {
         // Reclaim only under pressure; never scan unrelated attached mounts.
         if d.resident > l.owners
             || d.raw > e.bytes.capacity()
-            || d.edges > e.child_pool.capacity()
+            || d.edges > e.orders.keys.capacity()
+            || d.tags > e.orders.tags.capacity()
             || l.bounds.peak() + d.new_glyphs > l.text.glyphs.capacity()
         {
             let start = b.victims.len();
@@ -325,8 +341,9 @@ impl Tree {
             2 * d.resident,
             self.budget,
         )?;
-        self.elements.child_pool.ensure(
+        self.elements.orders.ensure(
             if initial { 2 * d.edges } else { d.edges },
+            if initial { 2 * d.tags } else { d.tags },
             2 * d.resident,
             self.budget,
         )?;
@@ -338,7 +355,10 @@ impl Tree {
         };
         let words = d.words;
         self.output.fits.reserve(d.images, self.budget)?;
-        self.output.reserve_poses(d.poses, self.budget)?;
+        self.output
+            .reserve_poses(d.poses * (1 + usize::from(tree.escapes != 0)), self.budget)?;
+        self.output
+            .reserve_bands(tree.escapes, d.groups, self.budget)?;
         self.elements
             .images
             .reserve(self.elements.slots.capacity(), d.images, self.budget)?;
@@ -355,6 +375,7 @@ impl Tree {
             d.materials,
             d.material_bytes,
             words,
+            d.clip_nearby,
             self.budget,
         )?;
         self.output.reserve_for(
@@ -363,10 +384,11 @@ impl Tree {
             words,
             d.materials
                 + d.images
+                + tree.extra_commands()?
                 + 2 * d.groups
                 + if d.groups > 0 { 2 * words } else { 0 }
                 + if d.rules > 0 { 2 * d.texts } else { 0 },
-            d.groups,
+            d.groups + tree.mounts,
             self.budget,
         )?;
         b.prepare_domains(
@@ -441,11 +463,12 @@ impl Tree {
             }
             let parent = s.parent.map(|id| e.ids[&id]);
             let m = &mut e.slots[k];
-            let moved = !s.inserted && m.parent != parent;
+            let moved = !s.inserted && (m.parent, m.slot) != (parent, s.slot);
             if moved {
-                m.change.old_parent.get_or_insert(m.parent);
+                m.change.old_parent.get_or_insert((m.parent, m.slot));
             }
             m.parent = parent;
+            m.slot = s.slot;
             let old = m.stats.own;
             let readers_changed = old.height_reader != s.stats.own.height_reader
                 || old.late_nonfill != s.stats.own.late_nonfill;
@@ -462,12 +485,13 @@ impl Tree {
                 e.attrs.insert(k, a);
             }
             if let Some(order) = s.order {
-                let cs = b.orders.get(&order);
-                let span = e.child_pool.alloc(cs.len());
-                for (to, id) in e.child_pool.write(span).iter_mut().zip(cs) {
-                    *to = e.ids[id];
-                }
-                e.slots[k].children = span;
+                let cs = b.orders.get(order);
+                e.slots[k].children = e.orders.insert(
+                    cs.keys.len(),
+                    cs.keys.iter().map(|id| e.ids[id]),
+                    cs.tags.len(),
+                    cs.tags.iter().copied(),
+                );
             }
         }
         self.output.cancel_fits();
@@ -480,6 +504,7 @@ impl Tree {
         self.output.material_bytes = d.material_bytes;
         self.output.rules = d.rules;
         self.output.groups = d.groups;
+        self.output.clip_nearby = d.clip_nearby;
         self.output.poses = d.poses;
         e.images.active = d.images;
         self.layers.scale_declarations = d.scales;

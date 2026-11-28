@@ -24,6 +24,8 @@ the [presenter](../../native/emerge_skia/src/session/presentation.rs) takes the
 newest eligible **completed image**. If B is ready and C is still drawing, B
 can be handed off; finishing C cannot change an already claimed B.
 
+A [Nearby mount](nearby-semantics.md) is an ownership edge, not an ordinary layout child. When packing a changed drawing or hit stream, the same layer traversal defers escaping panels and finishes all peer menus before their tooltips. A clean stream keeps its sealed buffer. No dedicated layout pass or render surface is needed for a layer.
+
 Binary headless installs on delivery. Wayland shm attaches only the winner;
 GL samples its resolved share-group texture and Vulkan copies its resolved
 image on a separate transfer/present queue. A successful handoff (or reuse

@@ -18,12 +18,15 @@ pub(super) struct Block {
 #[derive(Debug)]
 pub(super) struct Order {
     pub keys: Box<[Key]>,
+    pub tags: Box<[Slot]>,
     pub _grant: storage::Grant,
 }
-impl std::ops::Deref for Order {
-    type Target = [Key];
-    fn deref(&self) -> &[Key] {
-        &self.keys
+impl Order {
+    pub fn edges(&self) -> Edges<'_, Key> {
+        Edges {
+            keys: &self.keys,
+            tags: &self.tags,
+        }
     }
 }
 #[derive(Debug)]
@@ -32,6 +35,7 @@ pub(super) struct Record {
     pub id: u64,
     pub shape: Shape,
     pub parent: Option<Key>,
+    pub slot: Option<Slot>,
     pub stats: Subtree,
     pub inputs: scale::Inputs,
     pub index: usize,

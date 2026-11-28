@@ -12,7 +12,7 @@ pub(super) struct Scratch {
     patch: Option<batch::Batch>,
 }
 type Result<T> = std::result::Result<T, String>;
-const MAX_BYTES: usize = 64 * 1024 * 1024;
+pub(super) const MAX_BYTES: usize = 64 * 1024 * 1024;
 pub(super) struct Reader<'a>(pub(super) &'a [u8]);
 impl<'a> Reader<'a> {
     pub(super) fn take(&mut self, n: usize) -> Result<&'a [u8]> {
@@ -310,6 +310,7 @@ fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
             47 => a.underline = Some(r.flag()?),
             48 => a.strike = Some(r.flag()?),
             16 => a.font_size = Some(r.number()?),
+            77 => a.clip_nearby = r.flag()?,
             78 => {
                 let s = f64::from_be_bytes(r.array()?);
                 if !s.is_finite() || s <= 0. {
@@ -395,8 +396,13 @@ impl Tree {
             for &c in children {
                 out.extend(e.slots[c].id.to_be_bytes())
             }
-            out.extend([0, 0]);
-            stack.extend(children.iter().rev())
+            let order = e.order(k);
+            out.extend((order.tags.len() as u16).to_be_bytes());
+            for (slot, c) in order.nearby() {
+                out.push(slot as u8);
+                out.extend(e.slots[c].id.to_be_bytes());
+            }
+            stack.extend(order.keys.iter().rev())
         }
         out
     }

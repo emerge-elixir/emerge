@@ -9,11 +9,11 @@ pub(super) struct Change {
     pub cold: bool,
     pub reattached: bool,
     pub membership: bool,
-    pub old_parent: Option<Option<Key>>,
+    pub old_parent: Option<(Option<Key>, Option<Slot>)>,
     pub image: Option<crate::raster_assets::Source>,
     pub layout_before: Option<rotation::Dependencies>,
     pub attrs: Option<(Attrs, Span<u8>)>,
-    pub order: Option<Span<Key>>,
+    pub order: Option<OrderSpan<Key>>,
     pub before: Option<std::sync::Arc<declaration::Record>>,
     pub pose_before: Option<(std::sync::Arc<Attrs>, std::sync::Arc<declaration::Block>)>,
 }
@@ -24,10 +24,11 @@ impl Mount {
             shape,
             index,
             parent: None,
+            slot: None,
             depth: Cell::new((0, 0)),
             stats: Subtree::default(),
             admitted: scale::Inputs::default(),
-            children: Span::default(),
+            children: OrderSpan::default(),
             bytes: Span::default(),
             detached: None,
             attachment: 0,
@@ -86,7 +87,7 @@ impl Elements {
         if !m.change.cold && m.change.order.is_none() {
             m.change.order = Some(span);
         } else {
-            self.child_pool.release(span);
+            self.orders.release(span);
         }
     }
     pub fn evict(&mut self, k: Key) {
@@ -97,12 +98,12 @@ impl Elements {
         self.ids.remove(&m.id);
         self.attrs.remove(k);
         self.bytes.release(m.bytes);
-        self.child_pool.release(m.children);
+        self.orders.release(m.children);
         if let Some((_, s)) = m.change.attrs {
             self.bytes.release(s);
         }
         if let Some(s) = m.change.order {
-            self.child_pool.release(s);
+            self.orders.release(s);
         }
         if self.attrs.version.is_none() {
             self.free_indices.push(m.index);
@@ -121,7 +122,44 @@ impl Layers {
             let m = &mut e.slots[k];
             debug_assert!(m.detached.is_none());
             let change = std::mem::take(&mut m.change);
-            let moved = change.old_parent.is_some_and(|old| old != m.parent);
+            let moved = change
+                .old_parent
+                .is_some_and(|(p, s)| p != m.parent || s.is_some() != m.slot.is_some());
+            let role = m.slot;
+            let slot_change = change
+                .old_parent
+                .and_then(|(_, s)| s.zip(role))
+                .filter(|(a, b)| a != b);
+            if let Some((old, next)) = slot_change {
+                // Front and behind share the same two-axis anchor.
+                if !matches!(
+                    (old, next),
+                    (Slot::Front, Slot::Behind) | (Slot::Behind, Slot::Front)
+                ) {
+                    self.enqueue(Pass::Place, k, e);
+                }
+                let height =
+                    old.host_height() != next.host_height() && e.slots[k].stats.reads_anchor[1];
+                if height || (old.host_width() != next.host_width() && self.reads_width_offer(e, k))
+                {
+                    self.enqueue(Pass::Flow, k, e);
+                }
+                if height {
+                    self.enqueue(Pass::Context, k, e);
+                    self.enqueue(Pass::Measure, k, e);
+                }
+                if old.escapes() != next.escapes() {
+                    self.enqueue(Pass::PaintContext, k, e);
+                    self.invalidate_composition(k, depth, Outputs::Both);
+                }
+            }
+            if moved
+                && change
+                    .old_parent
+                    .is_some_and(|(_, s)| s.is_some() || role.is_some())
+            {
+                self.invalidate_composition(k, depth, Outputs::Both);
+            }
             if (moved || change.reattached)
                 && (Self::reads_early_height(e, k)
                     || e.attrs[k].line_floor.is_some()
@@ -147,7 +185,7 @@ impl Layers {
                 .or_else(|| shared.map(|(r, _)| r.stats.own));
             let new_layout = e.slots[k].stats.own;
             if old_layout.is_some_and(|old| old.late_nonfill != new_layout.late_nonfill)
-                && let Some(p) = e.slots[k].parent
+                && let Some(p) = e.layout_parent(k)
                 && e.slots[p].shape.allots_width()
             {
                 // The source of the split charge changed, possibly behind an
@@ -160,7 +198,7 @@ impl Layers {
                     || old.fit_after_share != new_layout.fit_after_share
                     || old.width_sensitive_fit != new_layout.width_sensitive_fit
                     || old.width_sensitive_slot != new_layout.width_sensitive_slot
-            }) && let Some(p) = e.slots[k].parent
+            }) && let Some(p) = e.layout_parent(k)
                 && e.slots[p].stats.own.constrained_measure
             {
                 self.enqueue(Pass::Measure, p, e);
@@ -170,7 +208,7 @@ impl Layers {
             }
             if old_layout.is_some_and(|old| old.height_reader != new_layout.height_reader) {
                 self.enqueue(Pass::Context, k, e);
-                if let Some(p) = e.slots[k].parent
+                if let Some(p) = e.layout_parent(k)
                     && e.slots[p].shape == Shape::Column
                 {
                     self.enqueue(Pass::Context, p, e);
@@ -203,7 +241,7 @@ impl Layers {
                         self.enqueue(Pass::Place, k, e);
                         self.packed_width_reader(e, k);
                     }
-                    if let Some(p) = e.slots[k].parent.filter(|p| self.has_height_group(*p)) {
+                    if let Some(p) = e.layout_parent(k).filter(|p| self.has_height_group(*p)) {
                         self.enqueue(Pass::Context, p, e);
                     }
                 }
@@ -264,7 +302,7 @@ impl Layers {
                     }
                 }
                 if shared_order {
-                    self.invalidate_order(e, k, &before.children, change.membership);
+                    self.invalidate_order(e, k, before.children.edges(), change.membership);
                 }
             }
             if let Some((before, span)) = change.attrs {
@@ -279,8 +317,8 @@ impl Layers {
                 e.bytes.release(span);
             }
             if let Some(span) = change.order {
-                self.invalidate_order(e, k, e.child_pool.get(&span), change.membership);
-                e.child_pool.release(span);
+                self.invalidate_order(e, k, e.orders.get(span), change.membership);
+                e.orders.release(span);
             }
         }
     }
@@ -305,6 +343,9 @@ impl Layers {
             && (old.align[0] != next.align[0] || old.text_align != next.text_align)
         {
             invalidate(Pass::Reflow);
+        }
+        if e.slots[k].slot.is_some() && (align_changed || a.height != b.height) {
+            invalidate(Pass::Place);
         }
         if align_changed && shape == Shape::El {
             invalidate(Pass::Place);
@@ -368,6 +409,7 @@ impl Layers {
             }
         }
         if clip_changed
+            || old.clip_nearby != next.clip_nearby
             || old.pose != next.pose
             || (next.posed() && old.image_host_clip != next.image_host_clip)
             || old.color != next.color
@@ -380,7 +422,8 @@ impl Layers {
         {
             self.enqueue(Pass::PaintContext, k, e)
         }
-        let paint_changed = old.has_art() != next.has_art()
+        let paint_changed = old.clip_nearby != next.clip_nearby
+            || old.has_art() != next.has_art()
             || old.image_fit != next.image_fit
             || old.opacity != next.opacity
             || old.pose != next.pose
@@ -392,9 +435,12 @@ impl Layers {
         let output = Outputs::changed(
             paint_changed,
             old.click != next.click
+                || old.clip_nearby != next.clip_nearby
                 || clip_changed
                 || old.pose != next.pose
-                || (next.click && next.posed() && old.image_host_clip != next.image_host_clip),
+                || ((next.click || e.slots[k].slot.is_some_and(Slot::escapes))
+                    && next.posed()
+                    && old.image_host_clip != next.image_host_clip),
         );
         if let Some(outputs) = output {
             self.invalidate_composition(k, depth, outputs)
@@ -432,7 +478,7 @@ impl Layers {
             self.enqueue(Pass::Place, k, e);
         }
         if old.rotation != next.rotation
-            && let Some(p) = e.slots[k].parent
+            && let Some(p) = e.layout_parent(k)
         {
             // Equal unallotted fits needn't give equal occupied slots (e.g.
             // a square intrinsic box with a cross-axis fill after a turn).
@@ -449,7 +495,7 @@ impl Layers {
             self.enqueue(Pass::Reflow, p, e);
         }
         if align_changed
-            && let Some(p) = e.slots[k].parent
+            && let Some(p) = e.layout_parent(k)
             && !e.slots[p].shape.main_axis().is_some_and(|i| {
                 e.attrs[p].main_spacing(i) == MainSpacing::Even
                     && old.align[1 - i] == next.align[1 - i]
@@ -483,6 +529,9 @@ impl Layers {
         {
             self.enqueue(Pass::Place, k, e);
             self.packed_width_reader(e, k);
+        }
+        if a.height != b.height {
+            self.invalidate_nearby_heights(e, k);
         }
         if shape.cross_height_px(a) != shape.cross_height_px(b)
             || (shape.cross_height_px(b).is_some()
@@ -629,7 +678,7 @@ impl Layers {
         if width.is_none() && !height {
             return;
         }
-        let parent = e.slots[k].parent;
+        let parent = e.layout_parent(k);
         if height {
             if e.slots[k].shape == Shape::Paragraph && e.is_prose_float(k) {
                 // Mixed policies can change whether wrapped content grows a

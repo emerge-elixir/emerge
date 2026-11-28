@@ -38,6 +38,8 @@ impl Dependencies {
 }
 impl Subtree {
     pub fn with_layout(mut self, shape: Shape, a: &Attrs) -> Result<Self, String> {
+        self.group_runs =
+            self.child_group_runs + if a.opacity.is_some() { self.escapes } else { 0 };
         let kids = self.children;
         let b = a.sizing;
         let local_reflows = !matches!(b.height, Length::Px(_))
@@ -120,6 +122,18 @@ impl Subtree {
             fills_width: b.width.weight().is_some(),
             height_reader: kids.height_reader || shape.projects_height(a) || packed_share,
         };
+        self.reads_anchor = [
+            reads_width || (shape == Shape::Text && b.width == Length::Auto),
+            self.own.height_reader && share,
+        ];
+        if self.mount_needs[0]
+            && (shape.packs_width(b.width) || (shape == Shape::Image && b.width_from_height()))
+        {
+            return Err("Nearby width needs an anchor known before Place".into());
+        }
+        if self.mount_needs[1] && !matches!(b.height, Length::Px(_)) {
+            return Err("Nearby height-dependent width needs a definite anchor height".into());
+        }
         Ok(self)
     }
 }
@@ -155,7 +169,7 @@ impl Elements {
     }
     pub(super) fn is_row_charge(&self, k: Key) -> bool {
         let m = &self.slots[k];
-        m.stats.own.late_nonfill && m.parent.is_some_and(|p| self.slots[p].shape.allots_width())
+        m.stats.own.late_nonfill && self.parent_shape(k).is_some_and(Shape::allots_width)
     }
 }
 

@@ -526,8 +526,10 @@ impl Layers {
         self.jobs.iter().all(WorkSet::is_empty)
     }
     pub(super) fn begin_measure_inputs(&mut self, e: &Elements, root: Option<Key>) {
-        self.constrained
-            .begin(root.is_some_and(|k| e.slots[k].stats.own.constrained_measure));
+        self.constrained.begin(root.is_some_and(|k| {
+            let s = e.slots[k].stats;
+            s.own.constrained_measure || s.mounted_constraints
+        }));
     }
     pub fn mount(&mut self, k: Key, e: &Elements) {
         for p in PASSES {
@@ -536,7 +538,20 @@ impl Layers {
     }
     /// Compare the saved input with the final order. A saved edge can name
     /// an evicted generation; never resolve it as a current attachment.
-    pub fn invalidate_order(&mut self, e: &Elements, k: Key, old_order: &[Key], membership: bool) {
+    pub fn invalidate_order(
+        &mut self,
+        e: &Elements,
+        k: Key,
+        old: Edges<'_, Key>,
+        membership: bool,
+    ) {
+        let new = e.order(k);
+        if !old.nearby().eq(new.nearby())
+            && let Some(sides) = Composition::mount_order_change(&self.parts, k, old, new)
+        {
+            self.invalidate_composition(k, e.depth(k), sides);
+        }
+        let old_order = old.children();
         let node = &e.slots[k];
         let per_line = node.shape == Shape::WrappedRow;
         let reads_offers = !per_line
@@ -629,12 +644,12 @@ impl Layers {
         self.invalidate(p, k, e.depth(k));
     }
     fn parent(&mut self, p: Pass, k: Key, e: &Elements) {
-        if let Some(parent) = e.slots[k].parent {
+        if let Some(parent) = e.layout_parent(k) {
             self.enqueue(p, parent, e);
         }
     }
     pub(super) fn packed_width_reader(&mut self, e: &Elements, k: Key) {
-        if let Some(p) = e.slots[k].parent {
+        if let Some(p) = e.layout_parent(k) {
             if e.slots[p].shape.reads_prose_box(e, k) {
                 self.enqueue(Reflow, p, e);
             } else if e.slots[p].shape.reads_placed_width(e, k) {
@@ -655,7 +670,7 @@ impl Layers {
             }
         }
     }
-    fn reads_width_offer(&self, e: &Elements, k: Key) -> bool {
+    pub(super) fn reads_width_offer(&self, e: &Elements, k: Key) -> bool {
         let shape = e.slots[k].shape;
         shape.requests_fill_width(e, k)
             || (shape == Shape::Paragraph && !e.attrs[k].sizing.width.definite())
@@ -843,6 +858,18 @@ impl Layers {
                 && !matches!(b.width, Length::Px(_))
                 && b.height.weight().is_some())
     }
+    pub(super) fn invalidate_nearby_heights(&mut self, e: &Elements, k: Key) {
+        if !e.slots[k].stats.mount_needs[1] {
+            return;
+        }
+        for (slot, child) in e.nearby(k) {
+            if slot.host_height() && e.slots[child].stats.reads_anchor[1] {
+                for pass in [Context, Measure, Flow] {
+                    self.enqueue(pass, child, e);
+                }
+            }
+        }
+    }
     pub(super) fn invalidate_early_heights(&mut self, e: &Elements, p: Key) {
         for &c in e.children(p) {
             if e.slots[c].stats.children.height_reader
@@ -875,6 +902,14 @@ impl Layers {
         let Some(p) = e.slots[k].parent else {
             return Some(Constraint::Available(self.root_height(e, k)));
         };
+        if let Some(slot) = e.slots[k].slot {
+            return match e.attrs[p].sizing.height {
+                Length::Px(n) if slot.host_height() => {
+                    Some(Constraint::Available(pixels(n, e.slots[p].admitted.scale)))
+                }
+                _ => None,
+            };
+        }
         // A span's declared height contributes demand, not an allocation for its Text.
         if self.context[p].inline_host.is_some() {
             return None;
@@ -983,7 +1018,7 @@ impl Layers {
                     && !e.parent_shape(k).is_some_and(Shape::allots_width)
                 {
                     self.enqueue(Flow, k, e);
-                    if let Some(p) = e.slots[k].parent
+                    if let Some(p) = e.layout_parent(k)
                         && e.slots[p]
                             .shape
                             .measures_packed_width(e.attrs[p].sizing.width)
@@ -996,6 +1031,7 @@ impl Layers {
                 self.enqueue(Measure, k, e);
             }
             if scale_changed {
+                self.invalidate_nearby_heights(e, k);
                 if e.attrs[k].sizing.padding != [0.; 4]
                     && let Some(p) = inline_host
                 {
@@ -1015,7 +1051,7 @@ impl Layers {
                         matches!(l, Length::Formula(_))
                             || matches!(l, Length::BoundedFill { bounds, .. } if bounds.device(old) != bounds.device(ctx.scale))
                     };
-                    if let Some(p) = e.slots[k].parent
+                    if let Some(p) = e.layout_parent(k)
                         && e.slots[p].shape == Shape::WrappedColumn
                     {
                         if moved(e.attrs[k].sizing.width)
@@ -1045,7 +1081,7 @@ impl Layers {
                     self.enqueue(p, k, e);
                 }
             }
-            for &c in e.children(k) {
+            for &c in e.owned(k) {
                 if inputs_changed
                     || (site_changed && shape == Shape::El && e.slots[c].shape == Shape::Text)
                     || (old.is_none_or(|p| p.text_align != text_align)
@@ -1053,7 +1089,8 @@ impl Layers {
                 {
                     self.enqueue(Context, c, e);
                 }
-                if height_changed && e.slots[c].stats.own.height_reader {
+                if height_changed && e.slots[c].slot.is_none() && e.slots[c].stats.own.height_reader
+                {
                     self.enqueue(Context, c, e);
                     if Self::reads_early_height(e, c) {
                         self.enqueue(Measure, c, e);
@@ -1243,7 +1280,7 @@ impl Layers {
             // even if a quarter turn hides that change on the occupied axis.
             if rotation.mixes_axes()
                 && b.height.weight().is_some()
-                && let Some(p) = e.slots[k].parent
+                && let Some(p) = e.layout_parent(k)
                 && e.slots[p].shape == Shape::Column
                 && !e.attrs[p].sizing.height.definite()
             {
@@ -1274,7 +1311,7 @@ impl Layers {
             self.parent(Measure, k, e);
             if old.is_none_or(|s| s.w != m.w) {
                 self.enqueue(Flow, k, e);
-                if let Some(p) = e.slots[k].parent
+                if let Some(p) = e.layout_parent(k)
                     && e.slots[p].shape.reads_flow(
                         e.attrs[p].sizing.width,
                         FlowInput::ChildWidth(e.attrs[k].sizing.width),
@@ -1293,7 +1330,7 @@ impl Layers {
             // independent of the child's width-dependent fit.
             if old.is_none_or(|s| s.h != m.h)
                 && e.attrs[k].sizing.height.weight().is_some()
-                && let Some(p) = e.slots[k].parent
+                && let Some(p) = e.layout_parent(k)
                 && e.slots[p].shape.allots_height()
                 && e.attrs[p].sizing.height.fits_content_height()
             {
@@ -1356,6 +1393,25 @@ impl Layers {
         }
     }
     fn flow(&mut self, e: &Elements, k: Key) {
+        if let Some(slot) = e.slots[k].slot {
+            let p = e.slots[k].parent.expect("mounted root");
+            let h = self.known_height_edge(e, k).filter(|_| {
+                e.slots[k].stats.own.height_reader && e.attrs[k].sizing.height.weight().is_some()
+            });
+            self.offers.insert(
+                k,
+                WidthOffer {
+                    axis: if slot.host_width() {
+                        Constraint::Available(self.width[p].outer)
+                    } else {
+                        Constraint::Natural
+                    },
+                    break_before: false,
+                    projected_height: h
+                        .map(|edge| edge.resolve_height(e, k, self.local_measure[k].h)),
+                },
+            );
+        }
         let edge = self.offers[k];
         let width = self.width_for(e, k, edge.axis, edge.projected_height);
         let Width { outer, inner, .. } = width;
@@ -1367,6 +1423,13 @@ impl Layers {
         let old = self.width.insert(k, width);
         if old.is_none_or(|w| w.outer != outer || w.inner != inner) {
             self.enqueue(Reflow, k, e);
+        }
+        if old.is_none_or(|w| w.outer != outer) {
+            for (slot, c) in e.nearby(k) {
+                if slot.host_width() && self.reads_width_offer(e, c) {
+                    self.enqueue(Flow, c, e);
+                }
+            }
         }
         let offer_children = old
             .is_none_or(|w| w.inner != inner || w.new_edge || w.child_height != width.child_height);
@@ -1440,7 +1503,7 @@ impl Layers {
             self.packed_width_reader(e, k);
         }
         if old != Some(fit)
-            && let Some(p) = n.parent
+            && let Some(p) = e.layout_parent(k)
         {
             let height_changed = old.is_none_or(|s| s.h != h);
             match e.slots[p].shape {
@@ -1496,49 +1559,73 @@ impl Layers {
         let row_offer = self.fit[k].row_offer;
         let scale = self.context[k].inputs.scale;
         let rotation = e.attrs[k].rotation;
-        let placement = self.placement[k];
-        let (slot, mut local) = match placement {
-            Placement::Inline(host) => {
-                let local = self.placed_site(host, k);
-                (rotation.about_center(local), local)
-            }
-            Placement::Occupied(host) => {
-                let slot = self.placed_site(host, k);
-                let local = if rotation.mixes_axes() {
-                    let edge = if e.is_prose_float(k) {
-                        document::float_edge(e, k, self.local_measure[k])
+        let placed = |size: Size, [x, y]: [f32; 2]| {
+            let local = Rect {
+                x: coordinate(origin[0] + x),
+                y: coordinate(origin[1] + y),
+                width: size.w,
+                height: size.h,
+            };
+            (rotation.slot(local), local)
+        };
+        let role = e.slots[k].slot;
+        let (slot, mut local) = if let Some(slot) = role {
+            let host = self.local_frames[e.slots[k].parent.expect("mounted root")];
+            let height = if slot.host_height() {
+                Constraint::Available(host.height)
+            } else {
+                Constraint::Natural
+            };
+            let size = Fit::local_at(&self.fit, e, k, height);
+            placed(size, slot.offset(host, size.turned(rotation), &e.attrs[k]))
+        } else {
+            match self.placement[k] {
+                Placement::Inline(host) => {
+                    let local = self.placed_site(host, k);
+                    (rotation.about_center(local), local)
+                }
+                Placement::Occupied(host) => {
+                    let slot = self.placed_site(host, k);
+                    let local = if rotation.mixes_axes() {
+                        let edge = if e.is_prose_float(k) {
+                            document::float_edge(e, k, self.local_measure[k])
+                        } else {
+                            document::BLOCK_HEIGHT
+                        };
+                        let size = Fit::local_at(&self.fit, e, k, edge);
+                        Rect {
+                            width: size.w,
+                            height: size.h,
+                            ..slot
+                        }
                     } else {
-                        document::BLOCK_HEIGHT
+                        slot
                     };
-                    let size = Fit::local_at(&self.fit, e, k, edge);
-                    Rect {
-                        width: size.w,
-                        height: size.h,
-                        ..slot
-                    }
-                } else {
-                    slot
-                };
-                (slot, local)
-            }
-            Placement::Box { offset, height } => {
-                let size = Fit::local_at(&self.fit, e, k, height);
-                let local = Rect {
-                    x: coordinate(origin[0] + offset[0]),
-                    y: coordinate(origin[1] + offset[1]),
-                    width: size.w,
-                    height: size.h,
-                };
-                (rotation.slot(local), local)
+                    (slot, local)
+                }
+                Placement::Box { offset, height } => {
+                    placed(Fit::local_at(&self.fit, e, k, height), offset)
+                }
             }
         };
-        if !matches!(placement, Placement::Inline(_)) && rotation.mixes_axes() {
+        if rotation.mixes_axes()
+            && (role.is_some() || !matches!(self.placement[k], Placement::Inline(_)))
+        {
             local.x = coordinate(local.x + (slot.width - local.width) * 0.5);
             local.y = coordinate(local.y + (slot.height - local.height) * 0.5);
         }
         let old = self.local_frames.insert(k, local);
         let origin_changed = old.is_none_or(|f| [f.x, f.y] != [local.x, local.y]);
         let Rect { width, height, .. } = local;
+        if old != Some(local) {
+            let dw = old.is_none_or(|f| f.width != width);
+            let dh = old.is_none_or(|f| f.height != height);
+            for (slot, c) in e.nearby(k) {
+                if origin_changed || slot.reads_placement(dw, dh, &e.attrs[c]) {
+                    self.enqueue(Place, c, e);
+                }
+            }
+        }
         if changed(&mut self.frames, k, slot) || old != Some(local) {
             self.enqueue(PaintContext, k, e);
         }
@@ -1590,10 +1677,16 @@ impl Layers {
                 ) << i)
             });
         let shape = e.slots[k].shape;
-        let clip = parent.map_or(self.viewport, |p| self.paint[p].child_clip);
+        let escape_boundary = inherited.map_or(self.viewport, |p| p.escape_clip);
+        let escaping = e.slots[k].slot.is_some_and(Slot::escapes);
+        let clip = if escaping {
+            escape_boundary
+        } else {
+            inherited.map_or(self.viewport, |p| p.child_clip)
+        };
         // A borrowed media shape turns with the leaf. Do not rotate the
         // intersection with its ancestors (in particular a linear host clip).
-        let borrowed = parent.filter(|&p| {
+        let borrowed = e.layout_parent(k).filter(|&p| {
             shape == Shape::Image && a.posed() && !a.image_host_clip && e.attrs[p].clips_media()
         });
         let outer = borrowed.map_or(clip, |p| {
@@ -1606,8 +1699,23 @@ impl Layers {
         } else {
             outer
         };
+        let escape_clip = if !a.posed() {
+            escape_boundary
+        } else if outer == escape_boundary && shape != Shape::Image {
+            clip
+        } else {
+            a.pose.local_clip(f, escape_boundary)
+        };
         let next = PaintContext {
             frame: f,
+            escape_boundary,
+            escape_clip: if a.clip_nearby {
+                escape_clip
+                    .intersection(a.decor.inner_rect(f, scale))
+                    .unwrap_or_default()
+            } else {
+                escape_clip
+            },
             boundary: outer,
             clip,
             child_clip: if shape == Shape::Image && a.posed() {
@@ -1617,7 +1725,11 @@ impl Layers {
                 })
             } else if shape == Shape::Image {
                 // A leaf's content is the sample, not another layout box.
-                clip.media_clip(inherited)
+                if e.slots[k].slot.is_some() {
+                    clip
+                } else {
+                    clip.media_clip(inherited)
+                }
             } else if a.clips_media() {
                 clip.intersection(a.decor.inner_rect(f, scale))
                     .unwrap_or_default()
@@ -1655,26 +1767,36 @@ impl Layers {
             old.is_none_or(|p| p.transformed != next.transformed || p.zoom != next.zoom);
         let inputs_changed =
             space_changed || old.is_none_or(|p| p.rules != rules || p.offset != offset);
-        let draw = a.posed()
+        let guarded = a.clip_nearby && e.slots[k].stats.escapes > 0;
+        let draw = guarded
+            || a.posed()
             || (space_changed && (a.background.is_some() || a.has_art()))
             || shape == Shape::Paragraph
             || a.decor.active()
             || shape.reads_paint_context(a, old, next);
-        let hit = (a.posed() || a.click || shape == Shape::Paragraph || a.decor.radius != [0.; 4])
+        let hit = (guarded
+            || escaping
+            || a.posed()
+            || a.click
+            || shape == Shape::Paragraph
+            || a.decor.radius != [0.; 4])
             && (geometry_changed || old.is_none_or(|p| p.scale != next.scale));
         if let Some(outputs) = Outputs::changed(draw, hit) {
             self.invalidate_composition(k, e.depth(k), outputs);
         }
         let outer_clip_changed = old.is_none_or(|p| p.clip != clip);
         let frame_changed = old.is_none_or(|p| p.frame != f);
+        let escape_clip_changed = old.is_none_or(|p| p.escape_clip != next.escape_clip);
         if child_clip_changed
+            || escape_clip_changed
             || color_changed
             || inputs_changed
             || outer_clip_changed
             || frame_changed
         {
-            for &child in e.children(k) {
-                if child_clip_changed
+            for &child in e.owned(k) {
+                if escape_clip_changed
+                    || child_clip_changed
                     || inputs_changed
                     || (color_changed && e.attrs[child].color.is_none())
                     || (outer_clip_changed && e.slots[child].shape == Shape::Image)

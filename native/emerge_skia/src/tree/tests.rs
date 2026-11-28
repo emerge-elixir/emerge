@@ -17,6 +17,7 @@ mod inactive_even;
 mod layout_rules;
 mod linear_even;
 mod motion;
+mod nearby;
 mod nested;
 mod prose;
 mod publication;

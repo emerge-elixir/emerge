@@ -10,6 +10,7 @@ pub(super) struct Edit {
     pub id: u64,
     pub shape: Shape,
     pub parent: Option<u64>,
+    pub slot: Option<Slot>,
     pub depth: usize,
     pub stats: Subtree,
     pub attached: bool,
@@ -17,7 +18,7 @@ pub(super) struct Edit {
     pub request_image: bool,
     pub membership: bool,
     pub attrs: Option<(Attrs, Range<usize>)>,
-    pub order: Option<Span<u64>>,
+    pub order: Option<OrderSpan<u64>>,
     next_in_bucket: usize,
     visited: bool,
     closed: bool,
@@ -32,8 +33,8 @@ pub(super) struct Batch {
     hash: RandomState,
     heads: Vec<usize>,
     pub entries: Vec<Edit>,
-    pub orders: Pool<u64>,
-    stack: Vec<(u64, Option<u64>, usize)>,
+    pub orders: Orders<u64>,
+    stack: Vec<(u64, Option<u64>, Option<Slot>, usize)>,
     post: Vec<usize>,
     displaced: Vec<Key>,
     pub victims: Vec<Key>,
@@ -65,7 +66,7 @@ impl Batch {
         pool::reserve(&mut self.victims, n)?;
         pool::reserve(&mut self.undo, n)?;
         self.domains.reserve(n)?;
-        self.orders.ensure(n, n, Budget(0))
+        self.orders.keys.ensure(n, n, Budget(0))
     }
     pub(super) fn reset(&mut self) {
         for s in self.entries.drain(..) {
@@ -112,6 +113,7 @@ impl Batch {
             id,
             shape,
             parent: None,
+            slot: None,
             depth: 0,
             stats: Subtree::default(),
             attached: false,
@@ -135,25 +137,61 @@ impl Batch {
         let s = &mut self.entries[i];
         s.stats = m.stats;
         s.parent = m.parent.map(|p| e.slots[p].id);
+        s.slot = m.slot;
         s.depth = e.depth(k);
         s.attached = true;
         Ok(i)
     }
-    pub(super) fn order(
+    fn order(
         &mut self,
         i: usize,
         len: usize,
         ids: impl Iterator<Item = u64>,
-        budget: Budget,
+        mounted: usize,
+        tags: impl Iterator<Item = Slot>,
+        b: Budget,
     ) -> Result<()> {
-        self.orders
-            .ensure(self.orders.len() + len, self.entries.len(), budget)?;
-        let span = self.orders.alloc(len);
-        for (to, id) in self.orders.write(span).iter_mut().zip(ids) {
-            *to = id;
-        }
-        self.entries[i].order = Some(span);
+        self.orders.ensure(
+            self.orders.keys.len() + len,
+            self.orders.tags.len() + mounted,
+            self.entries.len(),
+            b,
+        )?;
+        self.entries[i].order = Some(self.orders.insert(len, ids, mounted, tags));
         Ok(())
+    }
+    pub(super) fn wire_order(
+        &mut self,
+        i: usize,
+        count: usize,
+        ordinary: impl Iterator<Item = u64>,
+        mounts: &[[u8; 9]],
+        b: Budget,
+    ) -> Result<()> {
+        self.entries[i].shape.check_children(count)?;
+        for m in mounts {
+            Slot::decode(m[0])?;
+        }
+        self.order(
+            i,
+            count + mounts.len(),
+            ordinary.chain(
+                mounts
+                    .iter()
+                    .map(|m| u64::from_be_bytes(m[1..].try_into().unwrap())),
+            ),
+            mounts.len(),
+            mounts
+                .iter()
+                .map(|m| Slot::decode(m[0]).expect("validated slot")),
+            b,
+        )
+    }
+    pub(super) fn root_stats(&self, e: &Elements) -> Subtree {
+        self.root.map_or_else(Subtree::default, |id| {
+            self.get(id)
+                .map_or_else(|| e.slots[e.ids[&id]].stats, |s| s.stats)
+        })
     }
     pub(super) fn entry(
         &mut self,
@@ -183,16 +221,14 @@ impl Batch {
         }
         if flags & 2 != 0 {
             let children = r.children()?;
-            shape.check_children(children.len() / 8)?;
-            if r.count()? != 0 {
-                return Err("Nearby is not in the first slice".into());
-            }
-            self.order(i, children.len() / 8, ids(children), b)?;
+            let n = r.count()?;
+            let mounted = r.take(n * 9)?.as_chunks::<9>().0;
+            self.wire_order(i, children.len() / 8, ids(children), mounted, b)?;
         }
         Ok(())
     }
     fn visit(&mut self, e: &Elements, b: Budget) -> Result<()> {
-        while let Some((id, parent, depth)) = self.stack.pop() {
+        while let Some((id, parent, slot, depth)) = self.stack.pop() {
             let old = e.live(id);
             let i = match self.position(id) {
                 Some(i) => i,
@@ -206,17 +242,22 @@ impl Batch {
             s.attached = true;
             s.inserted = old.is_none();
             s.parent = parent;
+            s.slot = slot;
             s.depth = depth;
             self.post.push(i);
             if let Some(span) = s.order {
-                let kids = self.orders.get(&span);
-                let end = self.stack.len() + kids.len();
+                let edges = self.orders.get(span);
+                let end = self.stack.len() + edges.keys.len();
                 pool::reserve(&mut self.stack, end)?;
-                self.stack
-                    .extend(kids.iter().map(|&c| (c, Some(id), depth + 1)));
-                s.membership = kids
+                self.stack.extend(
+                    edges
+                        .owned()
+                        .map(|(slot, c)| (c, Some(id), slot, depth + 1)),
+                );
+                s.membership = edges
+                    .children()
                     .iter()
-                    .any(|&c| old.is_none() || e.live(c).is_none_or(|k| e.slots[k].parent != old));
+                    .any(|&c| old.is_none() || e.live(c).is_none_or(|k| e.layout_parent(k) != old));
             } else {
                 s.closed = true;
                 s.stats = e.slots[old.ok_or("keep requires live occurrence")?].stats;
@@ -251,11 +292,11 @@ impl Batch {
                 }
                 continue;
             };
-            let children = self.orders.get(&order);
+            let edges = self.orders.get(order);
             let stats = Subtree::over(
-                children
-                    .iter()
-                    .map(|id| self.get(*id).expect("visited child").stats),
+                edges
+                    .owned()
+                    .map(|(slot, id)| (slot, self.get(id).expect("visited owner").stats)),
             );
             let s = &mut self.entries[i];
             let a = s
@@ -264,17 +305,19 @@ impl Batch {
                 .map_or_else(|| &e.attrs[e.ids[&s.id]], |(a, _)| a);
             s.stats = stats.with_layout(s.shape, a)?;
             if let Some(k) = e.live(self.entries[i].id) {
-                if children
-                    .iter()
-                    .copied()
-                    .eq(e.children(k).iter().map(|&c| e.slots[c].id))
+                if edges.tags == e.order(k).tags
+                    && edges
+                        .keys
+                        .iter()
+                        .copied()
+                        .eq(e.owned(k).iter().map(|&c| e.slots[c].id))
                 {
                     self.entries[i].order = None;
                     self.orders.release(order);
                 } else {
-                    let end = self.displaced.len() + e.children(k).len();
+                    let end = self.displaced.len() + e.owned(k).len();
                     pool::reserve(&mut self.displaced, end)?;
-                    self.displaced.extend_from_slice(e.children(k));
+                    self.displaced.extend_from_slice(e.owned(k));
                 }
             }
         }
@@ -289,7 +332,8 @@ impl Batch {
         b: Budget,
     ) -> Result<()> {
         let i = self.old(e, parent, b)?;
-        let children = e.children(parent);
+        let edges = e.order(parent);
+        let children = edges.keys;
         let len = children.len() - usize::from(root.is_none());
         self.order(
             i,
@@ -301,6 +345,10 @@ impl Batch {
                     Some(e.slots[c].id)
                 }
             }),
+            edges.tags.len() - usize::from(root.is_none() && e.slots[target].slot.is_some()),
+            edges
+                .nearby()
+                .filter_map(|(s, k)| (k != target || root.is_some()).then_some(s)),
             b,
         )?;
         self.entries[i].membership = true;
@@ -310,14 +358,20 @@ impl Batch {
         while let Some(k) = parent {
             let m = &e.slots[k];
             let stats = if let Some(span) = self.get(m.id).and_then(|s| s.order) {
-                Subtree::over(self.orders.get(&span).iter().map(|&id| {
-                    self.get(id)
-                        .map_or_else(|| e.slots[e.ids[&id]].stats, |s| s.stats)
+                Subtree::over(self.orders.get(span).owned().map(|(slot, id)| {
+                    (
+                        slot,
+                        self.get(id)
+                            .map_or_else(|| e.slots[e.ids[&id]].stats, |s| s.stats),
+                    )
                 }))
             } else {
-                Subtree::over(e.children(k).iter().map(|&c| {
-                    self.get(e.slots[c].id)
-                        .map_or(e.slots[c].stats, |s| s.stats)
+                Subtree::over(e.order(k).owned().map(|(slot, c)| {
+                    (
+                        slot,
+                        self.get(e.slots[c].id)
+                            .map_or(e.slots[c].stats, |s| s.stats),
+                    )
                 }))
             };
             let stats = stats.with_layout(m.shape, &e.attrs[k])?;
@@ -393,6 +447,7 @@ impl Batch {
             self.stack.push((
                 id,
                 parent.map(|k| e.slots[k].id),
+                target.and_then(|k| e.slots[k].slot),
                 target.map_or(0, |k| e.depth(k)),
             ));
         }
@@ -429,9 +484,9 @@ impl Batch {
             }
             let i = self.old(e, k, b)?;
             self.entries[i].attached = false;
-            let end = self.displaced.len() + e.children(k).len();
+            let end = self.displaced.len() + e.owned(k).len();
             pool::reserve(&mut self.displaced, end)?;
-            self.displaced.extend_from_slice(e.children(k));
+            self.displaced.extend_from_slice(e.owned(k));
         }
         Ok(())
     }

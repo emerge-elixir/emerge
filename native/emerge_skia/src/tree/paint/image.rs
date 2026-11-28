@@ -106,7 +106,7 @@ impl Sample {
         // The half-pixel clip relaxation and extra texel at a fitted edge are
         // bitmap sampling rules. They must not enlarge vector geometry.
         let picture = matches!(source, Source::Picture(_));
-        let relaxed = leaf && !picture && (own_clip || e.slots[k].parent.is_some());
+        let relaxed = leaf && !picture && (own_clip || e.layout_parent(k).is_some());
         let pad = plane.map_or((1., 1.), |p| pose::allowance(p.matrix, 1.));
         let bleed = if picture {
             (0., 0.)
@@ -117,7 +117,8 @@ impl Sample {
         let mut clip = if !leaf {
             sk(ctx.clip)
         } else if a.posed() {
-            let borrowed = !own_clip && e.slots[k].parent.is_some_and(|p| e.attrs[p].clips_media());
+            let borrowed =
+                !own_clip && e.layout_parent(k).is_some_and(|p| e.attrs[p].clips_media());
             sk(ctx.child_clip).with_outset(if borrowed || picture { bleed } else { pad })
         } else {
             sk(if picture { ctx.clip } else { ctx.child_clip })
