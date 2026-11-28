@@ -3,14 +3,49 @@
 use super::*;
 use skia_safe::{Canvas, Matrix, Rect as SkRect};
 
+/// Logical box clip and the clip a directly hosted bitmap may borrow. An
+/// intervening owner caps that half-pixel allowance at the previous box.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Aperture {
+    pub body: Rect,
+    pub media: Rect,
+}
+impl Aperture {
+    pub fn fixed(r: Rect) -> Self {
+        Self { body: r, media: r }
+    }
+    pub fn children(ctx: PaintContext) -> Self {
+        Self {
+            body: ctx.child_clip,
+            media: ctx.child_clip.media_clip(Some(ctx)),
+        }
+    }
+    pub fn intersect(self, prev: Option<Self>, pass: bool) -> Self {
+        prev.map_or(self, |p| Self {
+            body: self.body.intersection(p.body).unwrap_or_default(),
+            media: self
+                .media
+                .intersection(if pass { p.media } else { p.body })
+                .unwrap_or_default(),
+        })
+    }
+    pub fn shifted(self, x: f32, y: f32) -> Self {
+        Self {
+            body: self.body.shifted(x, y),
+            media: self.media.shifted(x, y),
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Plane {
     pub matrix: Matrix,
-    local: Matrix,  // inverse step in a Hits buffer, forward step in a Drawing
-    outer: Rect,    // stationary rectangular clip in the parent's space
-    device: SkRect, // conservative bounds for culling only
+    local: Matrix,   // inverse step in a Hits buffer, forward step in a Drawing
+    outer: Aperture, // stationary rectangular clip in the parent's space
+    device: SkRect,  // conservative bounds for culling only
     pub stop: Mask,
     parent: u32,
+    scroll: Option<Key>,
+    pub(super) moving: bool,
 }
 impl Pose {
     pub(in crate::tree) fn matrix(self, frame: Rect) -> Matrix {
@@ -40,6 +75,15 @@ impl Pose {
     }
 }
 impl Plane {
+    pub fn visible(self, r: Rect) -> Option<Rect> {
+        let b = self.matrix.invert()?.map_rect(self.device).0;
+        r.intersection(Rect {
+            x: b.left,
+            y: b.top,
+            width: b.width(),
+            height: b.height(),
+        })
+    }
     pub fn bounds(self, local: SkRect) -> SkRect {
         let mut r = self.matrix.map_rect(local).0;
         if r.intersect(self.device) {
@@ -70,7 +114,7 @@ pub(super) fn allowance(matrix: Matrix, device: f32) -> (f32, f32) {
 }
 
 #[derive(Default, PartialEq)]
-pub(super) struct Planes(pub Vec<Plane>);
+pub(super) struct Planes(pub Buffer<Plane>);
 impl Planes {
     pub fn branch(
         &mut self,
@@ -88,9 +132,11 @@ impl Planes {
         }
         let local = a.pose.matrix(ctx.frame);
         let outer = ctx.boundary;
-        let (matrix, device) = self.get(parent).map_or((local, sk(outer)), |p| {
+        let enclosing = self.get(parent);
+        let (matrix, device) = enclosing.map_or((local, sk(outer)), |p| {
             (p.matrix * local, p.bounds(sk(outer)))
         });
+        let moving = enclosing.is_some_and(|p| p.moving);
         if !(ctx.zoom.is_finite()
             && ctx.zoom > 0.
             && matrix.is_finite()
@@ -105,23 +151,145 @@ impl Planes {
             local: if hits { inverse } else { local },
             stop,
             parent,
-            outer,
-            device,
+            scroll: None,
+            moving,
+            outer: Aperture::fixed(outer),
+            device: if moving { sk(Rect::UNBOUNDED) } else { device },
         });
         Some(self.0.len() as u32)
     }
-    pub fn enter(&self, p: Plane, canvas: &Canvas, clips: &Clips, before: Mask) {
+    // A port whose content exports across bands cannot be drawn as one
+    // contiguous call. Every reference crossing that stationary boundary
+    // uses the same keyed displacement, including references in later bands.
+    pub fn content(&mut self, parent: u32, stop: Mask, outer: Aperture, k: Key) -> u32 {
+        let matrix = self
+            .get(parent)
+            .map_or_else(Matrix::new_identity, |p| p.matrix);
+        self.0.push(Plane {
+            matrix,
+            local: Matrix::new_identity(),
+            outer,
+            device: sk(Rect::UNBOUNDED),
+            stop,
+            parent,
+            scroll: Some(k),
+            moving: true,
+        });
+        self.0.len() as u32
+    }
+    pub fn translated_point(
+        &self,
+        mut id: u32,
+        (x, y): (f32, f32),
+        tables: &Tables,
+    ) -> Option<(f32, f32, [f32; 2])> {
+        self.get(id)?.scroll?;
+        let mut delta = [0.; 2];
+        while let Some(p) = self.get(id) {
+            let Some(k) = p.scroll else {
+                let inv = self.installed(id, tables, 1)?.matrix.invert()?;
+                let pt = inv.map_point((x, y));
+                return Some((pt.x, pt.y, delta));
+            };
+            let v = tables.get(k, 1)?.view.offset();
+            delta[0] -= v[0];
+            delta[1] -= v[1];
+            id = p.parent;
+        }
+        Some((x, y, delta))
+    }
+    pub fn installed(&self, id: u32, tables: &Tables, side: usize) -> Option<Plane> {
+        let mut p = self.get(id)?;
+        if p.moving {
+            let parent = self.installed(p.parent, tables, side);
+            p.device = parent.map_or(sk(p.outer.body), |a| a.bounds(sk(p.outer.body)));
+            let base = self
+                .get(p.parent)
+                .map_or_else(Matrix::new_identity, |a| a.matrix);
+            let current = parent.map_or(base, |a| a.matrix);
+            let mut x = current.translate_x() - base.translate_x();
+            let mut y = current.translate_y() - base.translate_y();
+            if let Some(k) = p.scroll {
+                let [sx, sy] = tables.get(k, side)?.view.offset();
+                x -= current.scale_x() * sx + current.skew_x() * sy;
+                y -= current.skew_y() * sx + current.scale_y() * sy;
+            }
+            p.matrix.post_translate((x, y));
+        }
+        Some(p)
+    }
+    // Ordinary boxes intersect a logical rectangle. A translation, unlike
+    // an authored pose, does not turn that rectangle into a hard device clip:
+    // a rotated fill still antialiases its newly exposed edge inside the mask.
+    fn limits(p: Plane, prev: Option<Aperture>, tables: &Tables) -> (Rect, Option<Aperture>) {
+        let area = p.outer.intersect(prev, false);
+        let outer = area.body;
+        let next = if let Some(k) = p.scroll {
+            let [x, y] = tables.get(k, 0).expect("sealed boundary").view.offset();
+            Some(area.shifted(x, y))
+        } else {
+            prev.map(|_| {
+                if outer.width <= 0. || outer.height <= 0. {
+                    return Aperture::fixed(Rect::default());
+                }
+                let r = p
+                    .local
+                    .invert()
+                    .unwrap()
+                    .map_rect(sk(outer))
+                    .0
+                    .with_outset((1., 1.));
+                Aperture::fixed(Rect {
+                    x: r.left,
+                    y: r.top,
+                    width: r.width(),
+                    height: r.height(),
+                })
+            })
+        };
+        (outer, next)
+    }
+    pub fn logical(&self, id: u32, limit: Option<Aperture>, tables: &Tables) -> Option<Aperture> {
+        let Some(p) = self.get(id) else {
+            return limit;
+        };
+        Self::limits(p, self.logical(p.parent, limit, tables), tables).1
+    }
+    pub fn enter(
+        &self,
+        p: Plane,
+        canvas: &Canvas,
+        clips: &Clips,
+        before: Mask,
+        tables: &Tables,
+        limit: Option<Aperture>,
+    ) -> Option<Aperture> {
+        let parent = self.get(p.parent);
         let mut stop = OPEN;
-        if let Some(parent) = self.get(p.parent) {
-            self.enter(parent, canvas, clips, OPEN);
+        let mut prev = limit;
+        if let Some(parent) = parent {
+            prev = self.enter(parent, canvas, clips, OPEN, tables, limit);
             stop = parent.stop;
         }
-        canvas.clip_rect(sk(p.outer), None, false);
+        let (outer, next) = Self::limits(p, prev, tables);
+        if p.scroll.is_none() {
+            canvas.clip_rect(sk(outer), None, false);
+        }
         clips.apply(p.stop, stop, canvas, 0, (0., 0.));
         if let Some(r) = clips.one(before) {
             r.apply(canvas, (0., 0.));
         }
-        canvas.concat(&p.local);
+        if let Some(k) = p.scroll {
+            let [x, y] = tables
+                .get(k, 0)
+                .expect("sealed scroll boundary")
+                .view
+                .offset();
+            canvas.translate((-x, -y));
+        } else {
+            canvas.concat(&p.local);
+        }
+        next
     }
     pub fn point(
         &self,
@@ -130,16 +298,21 @@ impl Planes {
         before: Mask,
         x: f32,
         y: f32,
+        tables: &Tables,
     ) -> Option<(f32, f32, Mask)> {
         let Some(p) = self.get(plane) else {
             return Some((x, y, OPEN));
         };
-        let (x, y, stop) = self.point(p.parent, clips, OPEN, x, y)?;
-        if !p.outer.contains(x, y)
+        let (x, y, stop) = self.point(p.parent, clips, OPEN, x, y, tables)?;
+        if !p.outer.body.contains(x, y)
             || !clips.contains(p.stop, stop, x, y)
             || clips.one(before).is_some_and(|r| !r.contains(x, y))
         {
             return None;
+        }
+        if let Some(k) = p.scroll {
+            let [dx, dy] = tables.get(k, 1)?.view.offset();
+            return Some((x + dx, y + dy, p.stop));
         }
         let pt = p.local.map_point((x, y));
         Some((pt.x, pt.y, p.stop))
@@ -155,11 +328,15 @@ pub(super) struct Coords {
     pub plane: u32,
 }
 impl Coords {
-    pub fn clip(self, draw: &Drawing, canvas: &Canvas) {
+    pub fn clip(self, draw: &Drawing, canvas: &Canvas, tables: &Tables) {
         let matrix = canvas.local_to_device();
         let plane = draw.planes.get(self.plane);
-        if let Some(p) = plane {
-            draw.planes.enter(p, canvas, &draw.clips, OPEN);
+        if let Some(p) = plane
+            && let Some(r) = draw
+                .planes
+                .enter(p, canvas, &draw.clips, OPEN, tables, None)
+        {
+            canvas.clip_rect(sk(r.body), None, false);
         }
         draw.clips.apply(
             self.mask,
@@ -181,14 +358,14 @@ pub(super) struct ShadowGuard {
     pub axes: [bool; 2],
 }
 impl ShadowGuard {
-    pub fn apply(mut link: u32, draw: &Drawing, canvas: &Canvas) {
+    pub fn apply(mut link: u32, draw: &Drawing, canvas: &Canvas, tables: &Tables) {
         if link == 0 {
             return;
         }
         let base = canvas.local_to_device();
         while link != 0 {
             let guard = draw.shadow_guards[link as usize - 1];
-            if let Some(p) = draw.planes.get(guard.plane) {
+            if let Some(p) = draw.planes.installed(guard.plane, tables, 0) {
                 canvas.concat(&p.matrix);
             }
             if guard.axes == [true, true] {

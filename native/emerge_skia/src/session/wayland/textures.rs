@@ -85,7 +85,7 @@ impl<S> Bank<S> {
             |t| &mut t.draw,
             || {
                 s.canvas().clear(Color::TRANSPARENT);
-                painter.record(s.canvas(), &bundle.scene.drawing)
+                painter.record(s.canvas(), &bundle.scene)
             },
         )?;
         #[cfg(feature = "stage-probes")]

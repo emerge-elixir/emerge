@@ -6,7 +6,7 @@ use std::{
     collections::VecDeque,
     time::{Duration, Instant},
 };
-pub(super) use visibility::{Facts, Query, Reach, order_port};
+pub(super) use visibility::{BandPart, Facts, Query, Reach, delegated, order_port};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Proposal {
@@ -120,10 +120,17 @@ impl Update {
 #[derive(Default)]
 struct State {
     visible_children: visibility::Window,
+    recording: paint::Window,
     view: View,
     spec: Spec,
     read_range: bool,
     echoes: [Echoes; 2],
+}
+impl State {
+    fn forget_order(&mut self) {
+        self.visible_children = Default::default();
+        self.recording = Default::default();
+    }
 }
 #[derive(Default)]
 pub(super) struct Ports {
@@ -166,6 +173,7 @@ impl Ports {
                 .map(|(k, mut s)| {
                     s.read_range = true;
                     s.visible_children = Default::default();
+                    s.recording = Default::default();
                     (k, s)
                 }),
         );
@@ -174,6 +182,15 @@ impl Ports {
         if let Some(s) = self.states.get_mut(&k) {
             s.read_range = true;
         }
+    }
+    pub fn recorded(&self, k: Key) -> Option<&paint::Window> {
+        self.states
+            .get(&k)
+            .map(|s| &s.recording)
+            .filter(|w| w.key.is_some())
+    }
+    pub fn recording(&mut self, k: Key) -> Option<&mut paint::Window> {
+        self.states.get_mut(&k).map(|s| &mut s.recording)
     }
     pub fn view(&self, k: Key) -> View {
         self.states.get(&k).map_or(View::default(), |s| s.view)
@@ -307,9 +324,16 @@ impl Tree {
             }
         }
         if changed {
+            if self.output.fits.has_drafts() {
+                self.output.cancel_fits(&mut self.elements);
+            }
             self.layers.enqueue(Pass::PaintContext, k, &self.elements);
-            self.layers
-                .invalidate_composition(k, self.elements.depth(k), paint::Outputs::Both);
+            if self.layers.scroll.recorded(k).is_some() {
+                self.layers.enqueue(Pass::Project, k, &self.elements);
+            } else {
+                self.layers
+                    .invalidate_composition(k, self.elements.depth(k), paint::Outputs::Both);
+            }
         }
         changed
     }

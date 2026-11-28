@@ -73,6 +73,16 @@ pub(super) struct Span {
     first: u32,
     end: u32,
 }
+impl Span {
+    pub(super) fn at(l: &Layers, paragraph: Key, owner: Key) -> Self {
+        let words = l.paragraphs.words_at(owner);
+        Self {
+            paragraph,
+            first: words.start,
+            end: words.end,
+        }
+    }
+}
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Part {
     Whole,
@@ -212,7 +222,10 @@ impl Output {
         let span = &l.paragraphs.fragments(k)[range.first as usize..range.end as usize];
         let Some(first) = span.first() else { return };
         let source = first.source;
-        let ctx = l.painted(k);
+        let ctx = self
+            .inline_base
+            .filter(|(s, _)| s.paragraph == k)
+            .map_or_else(|| l.painted(k), |(_, ctx)| ctx);
         let owner_ctx = l.painted(owner);
         let outer = Space {
             plane: scope.plane,
@@ -393,7 +406,7 @@ impl Output {
                 for (line, r) in lines(span) {
                     glyphs(draw, line, r);
                 }
-                draw.end_group(inner, l.viewport);
+                draw.end_group(inner);
             }
             for (_, r) in lines(span) {
                 decoration(draw, r, Phase::Border);

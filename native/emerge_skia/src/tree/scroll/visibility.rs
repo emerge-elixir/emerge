@@ -2,7 +2,8 @@
 //! is implicit in the *existing* child slice: its midpoint holds the union of
 //! that slice. No copied keys, per-port Vec, fixed pitch or second dirty set.
 use super::*;
-use paint::{Composition, PaintContext};
+use crate::tree::queue::WorkSet;
+use paint::{Composition, Outputs, PaintContext};
 use skia_safe::Rect as Box2;
 
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -163,6 +164,11 @@ pub(in crate::tree) struct Facts {
     pub reach: Reach,
     pub active: [bool; 2],
     pub exports: [bool; 2],
+    pub coupled: bool,
+    pub opaque: bool,
+    pub media: bool,
+    pub ports: bool,
+    pub defer_clips: bool,
 }
 impl Facts {
     fn union(self, b: Self) -> Self {
@@ -170,6 +176,11 @@ impl Facts {
             reach: self.reach.union(b.reach),
             active: std::array::from_fn(|i| self.active[i] || b.active[i]),
             exports: std::array::from_fn(|i| self.exports[i] || b.exports[i]),
+            coupled: self.coupled || b.coupled,
+            opaque: self.opaque || b.opaque,
+            media: self.media || b.media,
+            ports: self.ports || b.ports,
+            defer_clips: self.defer_clips || b.defer_clips,
         }
     }
 }
@@ -186,6 +197,8 @@ struct Summary {
     ordered: [bool; 2],
     // The common interval on the other axis certifies that a single run is enough.
     common: Box2,
+    covers: Extent,
+    overlap: bool,
 }
 impl Summary {
     fn leaf(facts: Facts) -> Self {
@@ -194,9 +207,20 @@ impl Summary {
                 facts,
                 ordered: [true; 2],
                 common: r,
+                covers: if facts.opaque {
+                    facts.reach.ink
+                } else {
+                    Extent::Empty
+                },
+                overlap: false,
             },
             _ => Self {
                 facts,
+                covers: if facts.opaque {
+                    facts.reach.ink
+                } else {
+                    Extent::Empty
+                },
                 ..Self::default()
             },
         }
@@ -210,6 +234,14 @@ impl Summary {
         Self {
             facts: self.facts.union(other.facts),
             ordered,
+            covers: self.covers.union(other.covers),
+            overlap: self.overlap
+                || other.overlap
+                || match other.covers {
+                    Extent::Empty => false,
+                    Extent::Box(r) => self.facts.reach.ink.intersects(r),
+                    Extent::Unknown => true,
+                },
             common: Box2::new(
                 self.common.left.max(other.common.left),
                 self.common.top.max(other.common.top),
@@ -241,8 +273,9 @@ pub(super) struct Window {
     query: Option<Query>,
     last: Run, // A monotone list uses only this pair. Extra runs link backwards by ordinal.
     multiple: bool,
+    revision: u64,
 }
-fn delegated(e: &Elements, port: Key) -> Option<Key> {
+pub(in crate::tree) fn delegated(e: &Elements, port: Key) -> Option<Key> {
     if e.slots[port].shape != Shape::El {
         return None;
     }
@@ -410,6 +443,10 @@ fn fit(
     entry.summary = summary;
     Some(summary)
 }
+pub(in crate::tree) enum BandPart {
+    Branch(Key),
+    Rows(std::ops::Range<usize>),
+}
 impl Ports {
     pub(in crate::tree) fn exhaustive(&self) -> bool {
         #[cfg(test)]
@@ -423,12 +460,12 @@ impl Ports {
     }
     pub(in crate::tree) fn forget_order(&mut self, e: &Elements, k: Key) {
         if let Some(s) = self.states.get_mut(&k) {
-            s.visible_children = Window::default();
+            s.forget_order();
         }
         if let Some(s) = e.layout_parent(k).and_then(|p| self.states.get_mut(&p))
             && s.visible_children.order.is_some_and(|(host, _)| host == k)
         {
-            s.visible_children = Window::default();
+            s.forget_order();
         }
     }
     pub(in crate::tree) fn facts(
@@ -505,6 +542,125 @@ impl Ports {
         {
             self.counts.refits += 1;
         }
+    }
+    /// Visit only selected structural breaks in reverse order. The intervening
+    /// ordinal spans are stable calls, *not* lists of the currently visible rows.
+    pub(in crate::tree) fn bands_rev(
+        &self,
+        e: &Elements,
+        host: Key,
+        port: Key,
+        parts: &SecondaryMap<Key, Composition>,
+        mut f: impl FnMut(BandPart),
+    ) {
+        let kids = e.children(host);
+        let mut end = kids.len();
+        for r in self.ranges_rev(e, host, port) {
+            selected(
+                &self.entries,
+                parts,
+                kids,
+                0,
+                &r,
+                |a| a.coupled,
+                &mut |i, k| {
+                    if i + 1 < end {
+                        f(BandPart::Rows(i + 1..end));
+                    }
+                    f(BandPart::Branch(k));
+                    end = i;
+                },
+            );
+        }
+        if end != 0 {
+            f(BandPart::Rows(0..end));
+        }
+    }
+    // At the order root prune whole ordinal intervals; below it follow only
+    // existing composition links that actually lead to an inner port.
+    pub(in crate::tree) fn wake_nested(
+        &self,
+        e: &Elements,
+        host: Key,
+        port: Key,
+        parts: &SecondaryMap<Key, Composition>,
+        jobs: &mut WorkSet,
+    ) {
+        fn visit(e: &Elements, c: Key, parts: &SecondaryMap<Key, Composition>, jobs: &mut WorkSet) {
+            if e.attrs[c].scroll.port() {
+                jobs.push(e.depth(c), c, Outputs::Both);
+            } else {
+                linked(e, c, parts, jobs);
+            }
+        }
+        fn linked(
+            e: &Elements,
+            k: Key,
+            parts: &SecondaryMap<Key, Composition>,
+            jobs: &mut WorkSet,
+        ) {
+            let mut next = parts[k].port_child;
+            while let Some(c) = next {
+                visit(e, c, parts, jobs);
+                next = parts[c].port_sibling;
+            }
+        }
+        let kids = e.children(host);
+        if kids
+            .get(kids.len() / 2)
+            .is_some_and(|&k| self.entries[k].summary.facts.ports)
+        {
+            for r in self.ranges_rev(e, host, port) {
+                selected(
+                    &self.entries,
+                    parts,
+                    kids,
+                    0,
+                    &r,
+                    |a| a.ports,
+                    &mut |_, c| visit(e, c, parts, jobs),
+                );
+            }
+        }
+        // At the delegated host the linked children are its mounts. Mounts
+        // declared on the port itself are stationary and need no projection.
+        if port != host {
+            linked(e, host, parts, jobs);
+        }
+    }
+    pub(in crate::tree) fn selection(
+        &self,
+        e: &Elements,
+        host: Key,
+        port: Key,
+    ) -> Option<(u64, bool)> {
+        let w = self.states.get(&port)?.visible_children;
+        let kids = e.children(host);
+        (w.order == Some((host, kids.len())) && w.query.is_some()).then(|| {
+            (
+                w.revision,
+                kids.get(kids.len() / 2)
+                    .is_some_and(|k| self.entries[*k].summary.overlap),
+            )
+        })
+    }
+    pub(in crate::tree) fn ranges_rev<'a>(
+        &'a self,
+        e: &'a Elements,
+        host: Key,
+        port: Key,
+    ) -> impl Iterator<Item = std::ops::Range<usize>> + 'a {
+        let w = self.states[&port].visible_children;
+        let kids = e.children(host);
+        std::iter::successors(w.last.nonempty().then_some(w.last), move |r| {
+            w.multiple
+                .then(|| self.entries[kids[r.first]].previous)
+                .filter(|r| r.nonempty())
+        })
+        .map(|r| r.first..r.end)
+    }
+    pub(in crate::tree) fn ordinal(&self, k: Key) -> Option<usize> {
+        Some(self.entries.get(k)?.ordinal)
     }
     pub(in crate::tree) fn children_rev<'a>(
         &'a self,
@@ -603,6 +759,7 @@ impl Ports {
         if w.last != last || w.multiple != multiple || (multiple && changed_links) {
             w.last = last;
             w.multiple = multiple;
+            w.revision += 1;
             #[cfg(test)]
             {
                 self.counts.rewrites += 1;
@@ -615,6 +772,30 @@ impl Ports {
         }
         let _ = probes;
     }
+}
+fn selected(
+    entries: &SecondaryMap<Key, Entry>,
+    parts: &SecondaryMap<Key, Composition>,
+    kids: &[Key],
+    lo: usize,
+    r: &std::ops::Range<usize>,
+    want: fn(Facts) -> bool,
+    f: &mut impl FnMut(usize, Key),
+) {
+    if kids.is_empty() || r.end <= lo || r.start >= lo + kids.len() {
+        return;
+    }
+    let mid = kids.len() / 2;
+    let k = kids[mid];
+    if !want(entries[k].summary.facts) {
+        return;
+    }
+    let i = lo + mid;
+    selected(entries, parts, &kids[mid + 1..], i + 1, r, want, f);
+    if r.contains(&i) && want(parts[k].facts()) {
+        f(i, k);
+    }
+    selected(entries, parts, &kids[..mid], lo, r, want, f);
 }
 // Two nearby crossed edges are cheaper than a search; cap stepping for page
 // jumps and keyed targets, including reverse scroll and variable heights.

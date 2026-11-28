@@ -33,7 +33,9 @@ fn position_receipts_share_focus_order_without_packing_offscreen_stops() {
         end.hits.listener_at(end.viewport, 5., 25.).unwrap().id,
         last.id
     );
-    assert_eq!(t.output.packed_children, [2, 2]);
+    assert_eq!(t.output.packed_children, [0, 0]);
+    assert_eq!(t.output.recorded(), [2, 2]);
+    assert!(first.hits.captured(last.key, 1., 1.).is_none());
     writer
         .apply(&set(1, 3, root(0.5)), 1.)
         .unwrap()
@@ -45,7 +47,8 @@ fn position_receipts_share_focus_order_without_packing_offscreen_stops() {
     let port = last.parent.unwrap();
     assert_eq!(replaced.enclosure(port).unwrap().1.view.axes[1].pos, 0.5);
     assert_eq!(nav.enclosure(port).unwrap().1.view.axes[1].pos, 0.);
-    assert_eq!(t.output.packed_children, [2, 2]);
+    assert_eq!(t.output.packed_children, [0, 0]);
+    assert_eq!(t.output.recorded(), [2, 2]);
     let reversed = ids.iter().rev().copied().collect::<Vec<_>>();
     writer
         .apply(&order(1, 3, &reversed), 1.)

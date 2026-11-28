@@ -364,13 +364,21 @@ impl Tree {
         )?;
         self.layers
             .reserve_projection(d.scrolls, self.elements.slots.capacity())?;
-        self.output
-            .reserve_scrolls(d.scrolls, d.live, words, self.budget)?;
+        let sites = paint::Sites {
+            owners: d.live,
+            ports: d.scrolls,
+            images: d.images,
+            escapes: tree.escapes,
+        };
+        let markers = sites.markers();
+        self.output.reserve_scrolls(sites, words, self.budget)?;
         self.output
             .reserve_navigation(tree.tab_stops, d.scrolls, self.budget)?;
         self.output.fits.reserve(d.images, self.budget)?;
-        self.output
-            .reserve_poses(d.poses * (1 + usize::from(tree.escapes != 0)), self.budget)?;
+        self.output.reserve_poses(
+            d.poses * (1 + usize::from(tree.escapes != 0)) + 2 * d.scrolls,
+            self.budget,
+        )?;
         self.output
             .reserve_bands(tree.escapes, d.groups, self.budget)?;
         self.elements
@@ -397,15 +405,19 @@ impl Tree {
             desired,
             words,
             d.materials
+                + markers
                 + d.images
                 + 2 * d.scrolls
                 + tree.extra_commands()?
                 + 2 * d.groups
                 + if d.groups > 0 { 2 * words } else { 0 }
                 + if d.rules > 0 { 2 * d.texts } else { 0 },
-            d.groups + 3 * tree.mounts + d.scrolls,
+            d.groups + 3 * tree.mounts + d.scrolls + markers,
             self.budget,
         )?;
+        if d.scrolls != 0 {
+            self.output.reserve_recordings(sites, self.budget)?;
+        }
         b.prepare_domains(
             &self.elements,
             &mut self.layers.text.strikes,
@@ -430,6 +442,7 @@ impl Tree {
         }
         for &k in &b.victims {
             self.layers.evict(k);
+            self.output.forget_material(k);
             e.evict(k);
         }
         // Claim final keys (including forward references) and make all reclaimed
@@ -440,7 +453,8 @@ impl Tree {
                     // Its final parent can now contain *no* stops; don't rely
                     // on the parent's new summary to remove the old ordinal.
                     self.layers.navigation_changed |= e.slots[k].stats.tab_stops != 0;
-                    self.layers.scroll.remove(k);
+                    self.layers.drop_recordings(k);
+                    self.output.forget_material(k);
                     e.detach(k);
                 }
                 continue;
@@ -515,7 +529,7 @@ impl Tree {
                 );
             }
         }
-        self.output.cancel_fits();
+        self.output.cancel_fits(e);
         self.root = b.root.map(|id| e.ids[&id]);
         e.live_bytes = d.live_bytes;
         self.layers.text_count = d.texts;

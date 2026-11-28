@@ -56,18 +56,32 @@ impl ImageFit {
     }
 }
 
-/// Prepared samples and geometry. Pending/failed indicators have more than
-/// one paint operation and do not qualify for direct bitmap opacity.
+// A sample has either a source/crop or a retained binding, never both. In
+// particular, a sealed local bitmap need not pin its compressed input.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum Pixels {
+    Direct(fits::Bound),
+    Fitted(fits::Slot),
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Bleed {
+    None,
+    Host,
+    Entry,
+}
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Sample {
-    pub source: Source,
+    pub pixels: Pixels,
     pub fit: ImageFit,
-    // Keep xywh until binding: subtracting SkRect edges to recover a crop
-    // width can move a strict sampling boundary by one texel after scaling.
-    pub src: Rect,
     pub dst: SkRect,
     pub clip: SkRect,
     pub relaxed_masks: u8,
+    // A retained call may be below an authored pose in another recording.
+    pub antialias: bool,
+    // The unrelaxed host must still intersect the current exposure before its
+    // half-pixel sampling allowance applies. Never relax an empty clip.
+    pub host_clip: Rect,
+    pub bleed: Bleed,
     pub alpha: u8,
     pub tint: Option<Brush>,
 }
@@ -76,7 +90,7 @@ impl Sample {
         e: &Elements,
         k: Key,
         ctx: PaintContext,
-        plane: Option<Plane>,
+        (plane, antialias): (Option<Plane>, bool),
         relaxed_masks: u8,
         gradient: Option<u32>,
         fits: &mut fits::Fits,
@@ -107,7 +121,12 @@ impl Sample {
         // bitmap sampling rules. They must not enlarge vector geometry.
         let picture = matches!(source, Source::Picture(_));
         let relaxed = leaf && !picture && (own_clip || e.layout_parent(k).is_some());
-        let pad = plane.map_or((1., 1.), |p| pose::allowance(p.matrix, 1.));
+        let pad = if fits.recording.is_some() {
+            let v = ctx.zoom.recip();
+            if v.is_finite() { (v, v) } else { (0., 0.) }
+        } else {
+            plane.map_or((1., 1.), |p| pose::allowance(p.matrix, 1.))
+        };
         let bleed = if picture {
             (0., 0.)
         } else {
@@ -155,10 +174,9 @@ impl Sample {
         if !visible.intersect(clip) || plane.is_some_and(|p| p.bounds(visible).is_empty()) {
             return None;
         }
-        if let Some((record, size)) = target {
-            fits.add(k, record, size);
-        }
-        let source = if let Source::Picture(art) = source {
+        let pixels = if let Some(slot) = target.and_then(|(r, size)| fits.sample(k, r, size, src)) {
+            Pixels::Fitted(slot)
+        } else if let Source::Picture(art) = source {
             let fits = if a.image_fit.tiled() {
                 art.fits_tile(zoom) && art.fits(zoom, zoom)
             } else {
@@ -167,35 +185,55 @@ impl Sample {
                     dst.height() / src.height * zoom,
                 )
             };
-            if fits { source.clone() } else { Source::Failed }
+            Pixels::Direct(fits::Bound {
+                source: if fits { source.clone() } else { Source::Failed },
+                src,
+            })
         } else {
-            source.clone()
+            Pixels::Direct(fits::Bound {
+                source: source.clone(),
+                src,
+            })
+        };
+        let bleed = if !relaxed || a.posed() {
+            Bleed::None
+        } else if fits.recording == Some(k)
+            || e.layout_parent(k).is_some_and(|p| e.attrs[p].scroll.port())
+        {
+            Bleed::Entry
+        } else {
+            Bleed::Host
         };
         Some(Self {
+            pixels,
+            antialias,
+            host_clip: ctx.clip,
+            bleed,
             fit: a.image_fit,
-            source,
             tint: a
                 .svg_color
                 .map(Brush::Solid)
                 .or_else(|| gradient.map(|i| Brush::Svg(i, slot))),
-            src,
             dst,
             clip,
             relaxed_masks: if picture { 0 } else { relaxed_masks },
             alpha: 255,
         })
     }
-    pub(super) fn bind(&mut self, bitmap: &BitmapRef, intrinsic: skia_safe::ISize) {
-        let actual = bitmap.image().dimensions();
-        let (sx, sy) = (
-            actual.width as f32 / intrinsic.width as f32,
-            actual.height as f32 / intrinsic.height as f32,
-        );
-        self.src.x *= sx;
-        self.src.width *= sx;
-        self.src.y *= sy;
-        self.src.height *= sy;
-        self.source = Source::Ready(bitmap.clone());
+    pub(super) fn limit(&self, view: pose::Aperture) -> Rect {
+        match self.bleed {
+            Bleed::None => view.body,
+            _ if self.host_clip.intersection(view.body).is_none() => Rect::default(),
+            Bleed::Entry => view.media,
+            Bleed::Host => view.body,
+        }
+    }
+    // Pending/failed indicators draw multiple primitives, unlike a bitmap.
+    pub(super) fn is_bitmap(&self) -> bool {
+        match &self.pixels {
+            Pixels::Fitted(_) => true,
+            Pixels::Direct(b) => matches!(b.source, Source::Ready(_) | Source::Sized(_)),
+        }
     }
     pub fn draw(
         &self,
@@ -214,21 +252,26 @@ impl Sample {
             plane.map_or(OPEN, |p| p.stop),
             canvas,
             self.relaxed_masks,
-            plane.map_or((0.5, 0.5), |p| pose::allowance(p.matrix, 0.5)),
+            pose::allowance(canvas.local_to_device_as_3x3(), 0.5),
         );
-        if self.fit.tiled() && self.draw_tiles(canvas) {
+        let b = match &self.pixels {
+            Pixels::Direct(b) => b,
+            Pixels::Fitted(slot) => slot.get().expect("sealed image binding"),
+        };
+        let (source, src) = (&b.source, b.src);
+        if self.fit.tiled() && self.draw_tiles(canvas, source, src) {
             canvas.restore();
             return;
         }
-        match &self.source {
+        match source {
             Source::Ready(b) => {
                 #[cfg(test)]
                 opacity::bitmap_drawn();
                 let mut p = Paint::default();
-                p.set_alpha(self.alpha).set_anti_alias(plane.is_some());
+                p.set_alpha(self.alpha).set_anti_alias(self.antialias);
                 canvas.draw_image_rect_with_sampling_options(
                     b.image(),
-                    Some((&sk(self.src), SrcRectConstraint::Strict)),
+                    Some((&sk(src), SrcRectConstraint::Strict)),
                     self.dst,
                     SamplingOptions::new(FilterMode::Linear, MipmapMode::None),
                     &p,
@@ -243,11 +286,8 @@ impl Sample {
                 }
                 canvas.save();
                 canvas.translate((self.dst.left, self.dst.top));
-                canvas.scale((
-                    self.dst.width() / self.src.width,
-                    self.dst.height() / self.src.height,
-                ));
-                canvas.translate((-self.src.x, -self.src.y));
+                canvas.scale((self.dst.width() / src.width, self.dst.height() / src.height));
+                canvas.translate((-src.x, -src.y));
                 canvas.draw_picture(art.picture(), None, None);
                 canvas.restore();
                 if let Some(brush) = self.tint {
@@ -276,7 +316,7 @@ impl Sample {
     }
     // One shader operation even for a one-pixel tile in a large box. A
     // picture shader references the existing recording, never the SVG bytes.
-    fn draw_tiles(&self, canvas: &Canvas) -> bool {
+    fn draw_tiles(&self, canvas: &Canvas, source: &Source, src: Rect) -> bool {
         use skia_safe::{
             Matrix,
             TileMode::{Decal, Repeat},
@@ -288,7 +328,7 @@ impl Sample {
             _ => return false,
         };
         let matrix = Matrix::translate((self.dst.left, self.dst.top));
-        let shader = match &self.source {
+        let shader = match source {
             Source::Ready(b) => {
                 b.image()
                     .to_shader(modes, SamplingOptions::from(FilterMode::Linear), &matrix)
@@ -296,7 +336,7 @@ impl Sample {
             Source::Picture(art) => {
                 Some(
                     art.picture()
-                        .to_shader(modes, FilterMode::Linear, &matrix, &sk(self.src)),
+                        .to_shader(modes, FilterMode::Linear, &matrix, &sk(src)),
                 )
             }
             _ => return false, // normal pending/failed indicator
@@ -309,6 +349,19 @@ impl Sample {
             failed(canvas, self.dst);
         }
         true
+    }
+}
+pub(super) fn bound_crop(src: Rect, bitmap: &BitmapRef, intrinsic: skia_safe::ISize) -> Rect {
+    let actual = bitmap.image().dimensions();
+    let (sx, sy) = (
+        actual.width as f32 / intrinsic.width as f32,
+        actual.height as f32 / intrinsic.height as f32,
+    );
+    Rect {
+        x: src.x * sx,
+        y: src.y * sy,
+        width: src.width * sx,
+        height: src.height * sy,
     }
 }
 fn indicator(a: u8, r: u8, g: u8, b: u8) -> Paint {

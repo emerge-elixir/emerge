@@ -6,13 +6,13 @@ use skia_safe::Matrix;
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Bar {
     track: Rect,
-    thumb: Rect,
+    pub(super) thumb: Rect,
     pub start: f32,
     pub length: f32,
     pub travel: f32,
 }
 impl Bar {
-    fn new(frame: Rect, axis: usize, view: scroll::View) -> Option<Self> {
+    pub(super) fn new(frame: Rect, axis: usize, view: scroll::View) -> Option<Self> {
         let [size, cross] = if axis == 0 {
             [frame.width, frame.height]
         } else {
@@ -69,6 +69,7 @@ pub(crate) struct ScrollHit {
     // Captured drags can leave the shape. Keep the absolute inverse too;
     // wheel vectors do not include the translation of its pivot.
     inverse: Option<Matrix>,
+    plane: u32,
 }
 impl ScrollHit {
     pub(super) fn unprojected(key: Attachment, id: u64, view: scroll::View, frame: Rect) -> Self {
@@ -79,6 +80,7 @@ impl ScrollHit {
             frame,
             parent: 0,
             inverse: None,
+            plane: 0,
         }
     }
     pub fn bar(self, axis: usize) -> Option<Bar> {
@@ -162,7 +164,13 @@ fn track_thumb_and_inverse_share_the_frame_origin_and_travel() {
     assert!(Bar::new(Rect { width: 0., ..frame }, 1, view).is_none());
 }
 impl Hits {
-    pub(super) fn at(&self, v: Rect, x: f32, y: f32) -> impl Iterator<Item = (&Hit, f32, f32)> {
+    pub(super) fn at<'a>(
+        &'a self,
+        v: Rect,
+        x: f32,
+        y: f32,
+        tables: &'a Tables,
+    ) -> impl Iterator<Item = (&'a Hit, f32, f32)> {
         let inside = x >= 0. && x < v.width && y >= 0. && y < v.height;
         self.items
             .iter()
@@ -171,7 +179,7 @@ impl Hits {
             .filter_map(move |h| {
                 let (x, y, stop) =
                     self.planes
-                        .point(h.scope.plane, &self.clips, h.scope.before, x, y)?;
+                        .point(h.scope.plane, &self.clips, h.scope.before, x, y, tables)?;
                 (h.rect.contains(x, y) && self.clips.contains(h.scope.mask, stop, x, y))
                     .then_some((h, x, y))
             })
@@ -195,7 +203,8 @@ impl Hits {
                 view,
                 parent,
                 frame: ctx.frame,
-                inverse: self.planes.get(scope.plane).and_then(|p| p.matrix.invert()),
+                inverse: None,
+                plane: scope.plane,
             },
         );
         let wheel = self.items.len() as u32 + 1;
@@ -212,8 +221,20 @@ impl Hits {
         });
         wheel
     }
+}
+impl HitFrame {
     pub fn scroll_port(&self, k: Attachment) -> Option<ScrollHit> {
-        self.scrolls.get(&k).copied()
+        let mut p = self.scrolls.get(&k).copied()?;
+        if let Some(a) = self.planes.installed(p.plane, self.tables(), 1) {
+            if a.bounds(sk(p.frame)).is_empty() {
+                return None;
+            }
+            p.inverse = Some(a.matrix.invert()?);
+        }
+        if let Some(w) = self.tables().get(k.0, 1) {
+            p.view = w.view;
+        }
+        Some(p)
     }
     fn enclosing(&self, link: u32) -> Option<ScrollHit> {
         link.checked_sub(1)
@@ -224,22 +245,27 @@ impl Hits {
             .iter()
             .rev()
             .filter(|h| h.kind == HitKind::Port)
-            .map(|h| self.scrolls[&h.key])
+            .filter_map(|h| self.scroll_port(h.key))
     }
     pub fn ancestors(&self, first: Option<ScrollHit>) -> impl Iterator<Item = ScrollHit> {
         std::iter::successors(first, |p| self.enclosing(p.parent))
     }
     // Only bubble along the winning region's content ancestry, never into
     // an overlapping sibling behind it. Chrome wins on its track only.
-    pub fn region_at(&self, v: Rect, x: f32, y: f32) -> Option<(ScrollHit, Option<usize>)> {
+    pub fn region_at(&self, v: Rect, px: f32, py: f32) -> Option<(ScrollHit, Option<usize>)> {
         if self.scrolls.is_empty() {
             return None;
         }
-        self.at(v, x, y)
+        self.at(v, px, py, self.tables())
             .find_map(|(h, x, y)| match h.kind {
                 HitKind::Bars => {
-                    let p = self.scrolls[&h.key];
+                    let p = self.scroll_port(h.key)?;
                     p.track(x, y).map(|a| Some((p, Some(a))))
+                }
+                HitKind::Content | HitKind::Owner | HitKind::Segment(_) => {
+                    let (x, y, shift) = self.point_basis(h, (px, py), (x, y));
+                    self.program_hit(h, x, y, None, shift)
+                        .map(|_| self.enclosing(h.wheel).map(|p| (p, None)))
                 }
                 _ => Some(self.enclosing(h.wheel).map(|p| (p, None))),
             })
@@ -256,15 +282,17 @@ impl Hits {
 impl Output {
     pub(in crate::tree) fn reserve_scrolls(
         &mut self,
-        n: usize,
-        owners: usize,
+        sites: Sites,
         words: usize,
         b: Budget,
     ) -> Result<(), String> {
+        let n = sites.ports;
         if n != 0 {
             self.draw.reserve([0, 0, 0, 0, 0, 0, 0, n], b)?;
-            self.hits
-                .reserve([owners + 2 * words + 2 * n, 0, 0, n], b)?;
+            self.hits.reserve(
+                [sites.owners + 2 * words + 2 * n + sites.markers(), 0, 0, n],
+                b,
+            )?;
         }
         Ok(())
     }
@@ -274,11 +302,14 @@ impl Output {
             let draw = &mut self.draw.build;
             draw.scope = scope;
             let view = l.scroll.view(k);
-            for bar in [1, 0]
-                .into_iter()
-                .filter_map(|i| Bar::new(ctx.frame, i, view))
-            {
-                draw.push(Command::Thumb(bar.thumb, ctx.clip));
+            for axis in [1, 0] {
+                if let Some(bar) = Bar::new(ctx.frame, axis, view) {
+                    draw.push(if l.scroll.recorded(k).is_some() {
+                        Command::ScrollThumb(k, ctx.frame, ctx.clip, axis)
+                    } else {
+                        Command::Thumb(bar.thumb, ctx.clip)
+                    });
+                }
             }
         } else if let Some(rect) = ctx.frame.intersection(ctx.clip) {
             self.hits.build.items.push(Hit {

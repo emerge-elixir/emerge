@@ -667,7 +667,7 @@ impl Tree {
     }
     pub(crate) fn refresh(&mut self, width: f32, height: f32, scale: f32) -> Result<(), String> {
         self.layout(width, height, scale)?;
-        self.output.collect(&self.elements, self.root, &self.layers);
+        self.collect_output();
         Ok(())
     }
     pub(crate) fn layout(&mut self, width: f32, height: f32, scale: f32) -> Result<(), String> {
@@ -678,13 +678,21 @@ impl Tree {
         {
             return Err("invalid layout viewport or scale".into());
         }
+        if self.output.fits.has_drafts()
+            && (!self.elements.touched.is_empty()
+                || self.layers.prepared_scale != scale
+                || self.layers.viewport.width != width
+                || self.layers.viewport.height != height)
+        {
+            self.output.cancel_fits(&mut self.elements);
+        }
         if self.layers.prepared_scale != scale {
             self.prepare_display(scale)?;
         }
         self.layers
             .invalidate_changes(&mut self.elements, self.root, &mut self.output);
         self.layers
-            .recompute(&self.elements, self.root, width, height);
+            .recompute(&self.elements, self.root, width, height, &mut self.output);
         self.layers.bounds.context_dirty = false;
         Ok(())
     }

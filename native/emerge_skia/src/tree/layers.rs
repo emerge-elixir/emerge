@@ -261,7 +261,8 @@ pub(super) struct Layers {
     placement: SecondaryMap<Key, Placement>,
     pub frames: SecondaryMap<Key, Rect>,
     pub(super) paint: SecondaryMap<Key, PaintContext>,
-    projected: SecondaryMap<Key, Option<paint::Projected>>,
+    pub(super) projected: SecondaryMap<Key, paint::ProjectionSlot>,
+    pub(super) edge_epoch: u64,
     pub(super) parts: SecondaryMap<Key, Composition>,
     pub(super) viewport: Rect,
     pub(super) scale_declarations: usize,
@@ -547,6 +548,13 @@ impl Layers {
         self.jobs[p as usize].push(depth, k, Outputs::Both);
     }
     pub fn invalidate_composition(&mut self, k: Key, depth: usize, outputs: Outputs) {
+        if let Some(p) = self.parts.get_mut(k) {
+            for (s, n) in p.own_epoch.iter_mut().enumerate() {
+                if outputs.includes(s) {
+                    *n += 1;
+                }
+            }
+        }
         self.jobs[Compose as usize].push(depth, k, outputs);
     }
     #[cfg(test)]
@@ -808,11 +816,19 @@ impl Layers {
             self.enqueue(Place, k, e);
         }
     }
-    pub fn recompute(&mut self, e: &Elements, root: Option<Key>, w: f32, h: f32) {
+    pub fn recompute(
+        &mut self,
+        e: &Elements,
+        root: Option<Key>,
+        w: f32,
+        h: f32,
+        out: &mut paint::Output,
+    ) {
         #[cfg(test)]
         {
             self.trace.clear();
             self.paragraphs.frame += 1;
+            out.reset_work();
         }
         let vp = Rect {
             x: 0.,
@@ -863,7 +879,7 @@ impl Layers {
         // and composition still run once in ordinary ownership-depth order.
         loop {
             for &pass in &PASSES[..PaintContext as usize] {
-                self.drain(e, pass);
+                self.drain(e, pass, out);
             }
             let Some(rank) = self.deferred.as_ref().and_then(WorkSet::first_depth) else {
                 break;
@@ -879,11 +895,11 @@ impl Layers {
             }
         }
         for pass in [PaintContext, Compose, Project] {
-            self.drain(e, pass);
+            self.drain(e, pass, out);
         }
         self.rank = 0;
     }
-    fn drain(&mut self, e: &Elements, pass: Pass) {
+    pub(super) fn drain(&mut self, e: &Elements, pass: Pass, out: &mut paint::Output) {
         #[cfg(test)]
         assert!(
             self.jobs[..pass as usize].iter().all(WorkSet::is_empty),
@@ -921,13 +937,23 @@ impl Layers {
                     if let Some(outputs) = paint::compose(self, e, k, requested)
                         && let Some(p) = e.slots[k].parent
                     {
-                        self.invalidate_composition(p, e.depth(p), outputs)
+                        if let Some(slot) = self.projected.get_mut(k) {
+                            slot.retire(outputs, self.parts[k]);
+                        }
+                        if let Some(port) = scroll::order_port(e, p)
+                            && let Some(i) = self.scroll.ordinal(k)
+                            && let Some(w) = self.scroll.recording(port)
+                            && w.key == Some(port)
+                        {
+                            out.retire_local(w, i, k, outputs);
+                        }
+                        self.jobs[Compose as usize].push(e.depth(p), p, outputs);
                     }
                     if !self.scroll.exhaustive() && self.paint[k].scrollport {
                         self.enqueue(Project, k, e);
                     }
                 }
-                Project => self.project(e, k),
+                Project => self.project(e, k, out),
             }
         }
         #[cfg(test)]
@@ -1809,6 +1835,17 @@ impl Layers {
             return;
         }
         self.paint.insert(k, next);
+        if self.scroll.recorded(k).is_some()
+            && old.is_some_and(|p| {
+                PaintContext {
+                    content_scroll: next.content_scroll,
+                    ..p
+                } == next
+            })
+        {
+            self.enqueue(Project, k, e);
+            return;
+        }
         if e.slots[k].stats.tab_stops != 0
             && old.is_none_or(|p| p.frame != f || p.zoom != next.zoom)
         {
@@ -1820,7 +1857,7 @@ impl Layers {
             // distant ordinal on its first reveal. None is not a projection.
             if content.is_some() {
                 self.jobs[Project as usize].prepare_slot(k);
-                self.projected.insert(k, None);
+                self.projected.insert(k, Default::default());
                 #[cfg(test)]
                 {
                     self.scroll.counts.content_slots += 1;

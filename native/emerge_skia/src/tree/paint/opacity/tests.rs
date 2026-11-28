@@ -15,15 +15,20 @@ fn image(source: Source) -> Command {
     let (w, h) = source.dimensions().unwrap();
     Command::Image(image::Sample {
         fit: ImageFit::Contain,
-        source,
-        src: Rect {
-            width: w,
-            height: h,
-            ..Rect::default()
-        },
+        pixels: image::Pixels::Direct(fits::Bound {
+            source,
+            src: Rect {
+                width: w,
+                height: h,
+                ..Rect::default()
+            },
+        }),
         dst: SkRect::from_xywh(20., 16., 40., 24.),
         clip: sk(viewport()),
         relaxed_masks: 1,
+        antialias: false,
+        host_clip: viewport(),
+        bleed: image::Bleed::None,
         alpha: 255,
         tint: None,
     })
@@ -38,7 +43,13 @@ fn render(draw: &Drawing, bg: Color, isolated: Option<u8>) -> (Vec<u8>, Calls) {
     if let Some(a) = isolated {
         c.save_layer_alpha(None, u32::from(a));
     }
-    replay(c, draw, |_, _, _| unreachable!()).unwrap();
+    replay_inner(
+        c,
+        draw,
+        recording::Replay::root(&Tables::EMPTY),
+        &mut |_, _, _| unreachable!(),
+    )
+    .unwrap();
     if isolated.is_some() {
         c.restore();
     }
@@ -79,7 +90,7 @@ fn sampled_png_and_precomposited_snapshot_take_one_draw_without_an_opacity_layer
         let mut direct = Drawing::default();
         let start = direct.begin_group(128);
         direct.push(image(source));
-        direct.end_group(start, viewport());
+        direct.end_group(start);
         for bg in [Color::TRANSPARENT, Color::BLUE] {
             let (result, calls) = render(&direct, bg, None);
             assert_eq!((calls.layers, calls.images), (0, 1));
@@ -112,7 +123,7 @@ fn rounded_bitmap_clip_precedes_direct_alpha_without_an_intermediate_surface() {
         let start = (!isolate && alpha != 255).then(|| drawing.begin_group(alpha));
         drawing.push(image(png.clone()));
         if let Some(start) = start {
-            drawing.end_group(start, viewport());
+            drawing.end_group(start);
         }
         render(&drawing, bg, (isolate && alpha != 255).then_some(alpha))
     };
@@ -153,7 +164,7 @@ fn overlapping_draws_take_one_content_sized_layer_and_blend_once() {
         original.push(cmd.clone());
         group.push(cmd);
     }
-    group.end_group(start, viewport());
+    group.end_group(start);
     let (bytes, calls) = render(&group, Color::TRANSPARENT, None);
     assert_eq!((calls.layers, calls.images), (1, 0));
     assert_eq!(calls.last, SkRect::from_ltrb(7., 6., 35., 19.));

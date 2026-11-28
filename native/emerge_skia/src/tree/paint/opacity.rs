@@ -30,41 +30,96 @@ pub(super) fn bitmap_drawn() {
     });
 }
 
+// The own program contains at most one child-order call. Its extent is an
+// input, not part of the immutable own ink. A child edit can therefore change
+// the layer size without rewriting the parent's program or visiting its rows.
+#[derive(Default, Clone, Copy, Debug, PartialEq)]
+pub(super) struct Extent {
+    fixed: SkRect,
+    children: Option<usize>,
+}
+impl Extent {
+    pub(super) fn resolved(self, d: &Drawing, kids: SkRect) -> SkRect {
+        let mut r = self.fixed;
+        if let Some(i) = self.children {
+            let (s, _) = &d.commands[i];
+            r.join(
+                d.planes
+                    .get(s.plane)
+                    .map_or(kids, |p| p.matrix.map_rect(kids).0),
+            );
+        }
+        r
+    }
+}
 impl Drawing {
     pub(super) fn begin_group(&mut self, alpha: u8) -> usize {
         let start = self.commands.len();
         self.push(Command::Group {
             alpha,
-            bounds: SkRect::default(),
+            bounds: Extent::default(),
             end: 0,
         });
         start
     }
-    pub(super) fn end_group(&mut self, start: usize, viewport: Rect) {
+    pub(super) fn end_group(&mut self, start: usize) {
         let Command::Group { alpha, .. } = self.commands[start].1 else {
             unreachable!()
         };
         let end = self.commands.len();
         if end == start + 1 {
-            self.commands.pop();
+            self.commands.edit().pop();
             return;
         }
         if end == start + 2
-            && matches!(&self.commands[start+1].1, Command::Image(s) if matches!(s.source, crate::raster_assets::Source::Ready(_) | crate::raster_assets::Source::Sized(_)))
+            && matches!(&self.commands[start+1].1, Command::Image(s) if s.is_bitmap())
         {
-            let (mask, Command::Image(mut bitmap)) = self.commands.pop().unwrap() else {
+            let (mask, Command::Image(mut bitmap)) = self.commands.edit().pop().unwrap() else {
                 unreachable!()
             };
             bitmap.alpha = ((u16::from(bitmap.alpha) * u16::from(alpha) + 127) / 255) as u8;
             self.commands[start] = (mask, Command::Image(bitmap));
             return;
         }
+        let (plane, bounds) = self.extent(start + 1..end);
+        self.commands[start] = (
+            Scope {
+                plane,
+                ..Default::default()
+            },
+            Command::Group { alpha, bounds, end },
+        );
+        self.push(Command::Restore);
+    }
+    // A group whose contents share a translated plane can keep its tight
+    // local extent. Resolve that one plane at replay, not a whole list of
+    // commands. In particular a small escaping panel must not acquire a
+    // viewport-sized alpha layer merely because its row moves.
+    pub(super) fn extent(&self, range: Range<usize>) -> (u32, Extent) {
         let mut bounds = SkRect::default();
-        let mut i = start + 1;
-        while i < end {
+        let mut children = None;
+        let mut plane = 0;
+        let mut i = range.start;
+        while i < range.end {
             let (scope, cmd) = &self.commands[i];
             let extent = match cmd {
-                Command::Fill(rect, _) | Command::Thumb(rect, _) => sk(*rect).with_outset((1., 1.)),
+                Command::Order {
+                    call: Call::Children,
+                    ..
+                } => {
+                    children = Some(i);
+                    i += 1;
+                    continue;
+                }
+                Command::Order {
+                    defer_clips: true,
+                    call: Call::Window(_) | Call::Segment(..),
+                    ..
+                } => sk(Rect::UNBOUNDED),
+                Command::Order { bounds, .. } => *bounds,
+                Command::Fill(rect, _)
+                | Command::ScrollThumb(_, rect, _, _)
+                | Command::Thumb(rect, _) => sk(*rect).with_outset((1., 1.)),
                 Command::Box {
                     rect,
                     material,
@@ -82,27 +137,68 @@ impl Drawing {
                 Command::Glyphs { bounds, .. } => sk(*bounds).with_outset((1., 1.)),
                 Command::Group { end, bounds, .. } => {
                     i = *end;
-                    *bounds
+                    children = children.or(bounds.children);
+                    bounds.fixed
                 }
                 Command::Restore => unreachable!("child extent includes its restore"),
             };
-            let extent = self.planes.get(scope.plane).map_or(extent, |p| {
-                if cmd.outer_shadow(&self.materials).is_some() {
-                    p.matrix.map_rect(extent).0 // outer shadows escape ordinary host clips
+            let (id, extent) = self.planes.get(scope.plane).map_or((0, extent), |p| {
+                if p.moving {
+                    (scope.plane, extent)
+                } else if matches!(
+                    cmd,
+                    Command::Order {
+                        defer_clips: true,
+                        ..
+                    }
+                ) || cmd.outer_shadow(&self.materials).is_some()
+                {
+                    (0, p.matrix.map_rect(extent).0)
                 } else {
-                    p.bounds(extent)
+                    (0, p.bounds(extent))
                 }
             });
-            if extent.is_finite() {
+            if !extent.is_finite() || (!bounds.is_empty() && !extent.is_empty() && id != plane) {
+                return (
+                    0,
+                    Extent {
+                        fixed: sk(Rect::UNBOUNDED),
+                        children: None,
+                    },
+                );
+            }
+            if !extent.is_empty() {
+                plane = id;
                 bounds.join(extent);
-            } else {
-                bounds = sk(viewport);
-                break;
             }
             i += 1;
         }
-        self.commands[start].1 = Command::Group { alpha, bounds, end };
-        self.push(Command::Restore);
+        (
+            plane,
+            Extent {
+                fixed: bounds,
+                children,
+            },
+        )
+    }
+}
+// Establish the group's outward-rounded device extent just once. Mapping a
+// device AABB back through a rotated recording, then letting saveLayer map
+// that AABB forward again, creates a different sized surface at the AA edge.
+pub(super) fn open(canvas: &Canvas, bounds: SkRect, alpha: u8) -> bool {
+    let base = canvas.local_to_device();
+    let device = canvas.local_to_device_as_3x3().map_rect(bounds).0;
+    canvas.save();
+    canvas.reset_matrix();
+    if let Some(area) = visible(canvas, device) {
+        canvas.save_layer_alpha(area, u32::from(alpha));
+        canvas.set_matrix(&base);
+        #[cfg(test)]
+        record(area);
+        true
+    } else {
+        canvas.restore();
+        false
     }
 }
 #[cfg(test)]

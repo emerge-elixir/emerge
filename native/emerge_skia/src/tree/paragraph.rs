@@ -69,6 +69,8 @@ struct Site {
 }
 #[derive(Clone, Copy, Default)]
 struct Solution {
+    revision: u64,
+    has_floats: bool,
     span: Span<Fragment>,
     // A clean unexcluded paragraph can move vertically without breaking lines.
     clear_height: Option<f32>,
@@ -119,6 +121,12 @@ impl Paragraphs {
     }
     pub fn site(&self, c: Key) -> Rect {
         self.sites.get(c).map_or(Rect::default(), |s| s.frame)
+    }
+    pub fn revision(&self, k: Key) -> u64 {
+        self.solutions.get(k).map_or(0, |s| s.revision)
+    }
+    pub fn has_floats(&self, k: Key) -> bool {
+        self.solutions.get(k).is_some_and(|s| s.has_floats)
     }
     pub fn words_at(&self, owner: Key) -> std::ops::Range<u32> {
         self.sites[owner].words.clone()
@@ -191,8 +199,10 @@ impl Paragraphs {
             line_gap,
             align,
         );
+        let mut has_floats = false;
         for &owner in e.children(k) {
             if let Some(side) = e.float_side(owner) {
+                has_floats = true;
                 let rect = flow.add_float(side, float_size(owner));
                 self.sites.insert(
                     owner,
@@ -243,7 +253,9 @@ impl Paragraphs {
             .entry(k)
             .expect("live paragraph")
             .or_default();
+        solution.has_floats = has_floats;
         if changed {
+            solution.revision += 1;
             self.data.release(solution.span);
             solution.span = self.data.insert(&self.scratch);
         }

@@ -106,7 +106,8 @@ impl Capacity {
         // secondary-map slots, glyph overlap and paragraph/clip scratch.
         // Keep the credit pinned with any sealed readers after a growth.
         let units = [
-            4096 + 32 * usize::from(mounts != 0) + 640 * usize::from(scrolls != 0),
+            4096 + 32 * usize::from(mounts != 0)
+                + (640 + size_of::<paint::ProjectionSlot>()) * usize::from(scrolls != 0),
             4096,
             160,
             8192,
@@ -118,7 +119,7 @@ impl Capacity {
             128,
             320,
             1024,
-            4096 + 2048 * usize::from(stops != 0), // focus links + six port-view buffers
+            8192 + 2048 * usize::from(stops != 0), // stationary planes, focus links and views
             1024,                                  // stops and their attachment-to-ordinal lookup
             1536,
         ];
@@ -128,7 +129,36 @@ impl Capacity {
             .zip(units)
             .try_fold(65536usize, |s, (n, u)| s.checked_add(n.checked_mul(u)?))
             .ok_or("live workspace exceeds storage limit")?;
-        let grant = quota.reserve(charge)?;
+        let sites = paint::Sites {
+            owners,
+            ports: scrolls,
+            images,
+            escapes,
+        };
+        let markers = sites.markers();
+        let extra = extra + markers;
+        let recording = paint::recording_charge(
+            sites,
+            [
+                2 * owners + 5 * words + extra,
+                glyphs,
+                glyphs,
+                2 * materials + words + clip_nearby,
+                materials,
+                bytes,
+                poses + 2 * scrolls,
+                scrolls,
+            ],
+            [
+                owners + 2 * words + 2 * scrolls + markers,
+                2 * materials + 2 * words + clip_nearby,
+                poses + 2 * scrolls,
+                scrolls,
+            ],
+            5,
+            Budget(0),
+        )?;
+        let grant = quota.reserve(charge.checked_add(recording).ok_or(storage::LIMIT)?)?;
         let mut t = Tree::for_session(0);
         t.workspace = Some(Arc::new(grant));
         let e = &mut t.elements;
@@ -145,12 +175,11 @@ impl Capacity {
             glyphs,
             words,
             extra,
-            groups + 3 * mounts + scrolls,
+            groups + 3 * mounts + scrolls + markers,
             Budget(0),
         )?;
         t.layers.reserve_projection(scrolls, keys)?;
-        t.output
-            .reserve_scrolls(scrolls, owners, words, Budget(0))?;
+        t.output.reserve_scrolls(sites, words, Budget(0))?;
         t.output.reserve_bands(escapes, groups, Budget(0))?;
         t.output.reserve_navigation(stops, scrolls, Budget(0))?;
         t.output
@@ -160,7 +189,10 @@ impl Capacity {
             .reserve(keys, owners, words, Budget(0))?;
         e.images.reserve(keys, images, Budget(0))?;
         t.output.fits.reserve(images, Budget(0))?;
-        t.output.reserve_poses(poses, Budget(0))?;
+        t.output.reserve_poses(poses + 2 * scrolls, Budget(0))?;
+        if scrolls != 0 {
+            t.output.reserve_recordings(sites, Budget(0))?;
+        }
         let mut batch = Batch::default();
         batch.reserve(owners)?;
         t.wire.patch = Some(batch);
@@ -645,6 +677,7 @@ impl Publication {
             if e.slots.contains_key(k) {
                 t.layers.navigation_changed |= e.slots[k].stats.tab_stops != 0;
                 t.layers.evict(k);
+                t.output.forget_material(k);
                 e.evict(k);
             }
         }
@@ -702,7 +735,8 @@ impl Publication {
         if !rebuild && t.layers.prepared_scale != self.scale {
             self.version.each(|k, r| e.slots[k].admitted = r.inputs);
         }
-        t.output.cancel_fits();
+        t.output.cancel_fits(e);
+        t.output.scrolls = self.totals.scrolls;
         t.root = self.root;
         t.layers.prepared_scale = self.scale;
         t.layers.text.strikes = self.strikes;

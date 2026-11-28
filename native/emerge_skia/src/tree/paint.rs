@@ -7,6 +7,11 @@ mod navigation;
 use interaction::Actions;
 pub(crate) use navigation::{Navigation, Stop};
 mod buffers;
+mod pages;
+mod recording;
+use pages::Buffer;
+use recording::Tables;
+pub(super) use recording::{Sites, Window, charge as recording_charge};
 mod clips;
 mod coverage;
 pub(super) mod fits;
@@ -118,6 +123,13 @@ impl Rect {
             self
         }
     }
+    fn shifted(self, x: f32, y: f32) -> Self {
+        Self {
+            x: self.x + x,
+            y: self.y + y,
+            ..self
+        }
+    }
     /// Ordinary rectangular Skia clips use non-antialiased device edges.
     /// Hits keep the unrounded clip and the original element-local origin.
     pub(super) fn paint_clip(self, transformed: bool) -> Rect {
@@ -140,6 +152,10 @@ pub(crate) struct Attachment(pub(super) Key, pub(super) u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HitKind {
     Listener,
+    Children,
+    Content,
+    Owner,
+    Segment(Segment),
     Escape,
     Port,
     Bars,
@@ -205,6 +221,15 @@ pub(super) struct OwnPaint {
     decorated: bool,
     pub text: Option<GlyphPaint>,
 }
+impl Rect {
+    /// Finite local compile extent, never the current screen intersection.
+    pub(super) const UNBOUNDED: Self = Self {
+        x: -1e30,
+        y: -1e30,
+        width: 2e30,
+        height: 2e30,
+    };
+}
 impl OwnPaint {
     pub fn background(a: &Attrs, ctx: &PaintContext) -> Self {
         let clip = if a.image_src.len != 0 {
@@ -236,6 +261,15 @@ pub(super) struct Composition {
     bars: [bool; 2],
     posed: [bool; 2],
     opacity: Option<u8>,
+    coupled: bool,
+    independent_children: bool,
+    pub(super) separate_body: bool,
+    pub(super) own_epoch: [u64; 2],
+    media_subtree: bool,
+    pub(super) port_subtree: bool,
+    pub(super) port_child: Option<Key>,
+    pub(super) port_sibling: Option<Key>,
+    defer_clips: bool,
     ports: [Port; 2],
 }
 #[derive(Clone, Copy)]
@@ -243,6 +277,34 @@ pub(super) struct Projected {
     pub ctx: PaintContext,
     paint: OwnPaint,
     hit: Option<Hit>,
+}
+#[derive(Default)]
+pub(super) struct ProjectionSlot {
+    pub projection: Option<Projected>,
+    saved: [recording::Local; 2],
+}
+impl ProjectionSlot {
+    // Its contribution now lives in an ancestor's inseparable local program.
+    // Drop the mutable cache, never a sealed reader's copy.
+    pub(super) fn absorbed(&mut self, outputs: Outputs) {
+        for (s, v) in self.saved.iter_mut().enumerate() {
+            if outputs.includes(s) {
+                *v = Default::default();
+            }
+        }
+    }
+    pub(super) fn retire(&mut self, outputs: Outputs, p: Composition) {
+        for (s, v) in self.saved.iter_mut().enumerate() {
+            if outputs.includes(s) {
+                v.retire(p.own_epoch[s]);
+            }
+        }
+    }
+}
+impl Outputs {
+    pub(super) fn includes(self, s: usize) -> bool {
+        self == Self::Both || (s == 0) == (self == Self::Draw)
+    }
 }
 impl Projected {
     pub fn new(e: &Elements, k: Key, ctx: PaintContext, run: Option<&Run>) -> Self {
@@ -283,11 +345,28 @@ impl PaintContext {
     }
 }
 impl Composition {
+    pub(super) fn sides(self) -> [u64; 2] {
+        self.ports.map(|p| p.revision)
+    }
+    pub(super) fn independent_children(self) -> bool {
+        self.independent_children
+    }
     pub(super) fn facts(self) -> scroll::Facts {
         scroll::Facts {
             reach: self.reach,
             active: self.ports.map(|p| p.nonempty),
             exports: self.ports.map(|p| p.exports),
+            coupled: self.coupled,
+            media: self.media_subtree,
+            ports: self.port_subtree,
+            defer_clips: self.defer_clips,
+            opaque: self.paint.fill.is_some_and(|(_, c)| c & 255 == 255)
+                && !self.paint.decorated
+                && self.paint.text.is_none()
+                && !self.art
+                && self.ports[0].children == 0
+                && self.opacity.is_none()
+                && !self.posed[0],
         }
     }
     fn at(mut self, projected: Option<&Projected>) -> Self {
@@ -479,20 +558,95 @@ pub(super) fn compose(l: &mut Layers, e: &Elements, k: Key, requested: Outputs) 
             }
         }
     }
+    if ctx.content.is_some() || ctx.scrollport {
+        let children_coupled = indexed.map_or_else(
+            || e.children(k).iter().any(|c| parts[*c].coupled),
+            |f| f.coupled,
+        );
+        next.independent_children = !children_coupled;
+        next.separate_body = !ctx.scrollport
+            && indexed.map_or_else(
+                || e.children(k).iter().all(|&c| parts[c].separate_body),
+                |f| !f.ports,
+            )
+            && !e
+                .nearby(k)
+                .any(|(s, c)| s == Slot::Behind && !parts[c].separate_body);
+        next.media_subtree = a.has_art()
+            || indexed.map_or_else(
+                || e.children(k).iter().any(|c| parts[*c].media_subtree),
+                |f| f.media,
+            );
+        // A rounded ancestor clips primitives inside a local opacity group,
+        // not the composited group a second time. Shadows choose their own strips.
+        next.defer_clips = a.opacity.is_some()
+            || a.decor.shadows.len != 0
+            || indexed.map_or_else(
+                || e.children(k).iter().any(|&c| parts[c].defer_clips),
+                |f| f.defer_clips,
+            )
+            || e.nearby(k).any(|(_, c)| parts[c].defer_clips);
+        let ordinary = if indexed.is_none() {
+            e.children(k)
+        } else {
+            &[]
+        };
+        next.port_child = ordinary
+            .iter()
+            .copied()
+            .chain(e.nearby(k).map(|(_, c)| c))
+            .fold(None, |tail, c| {
+                if parts[c].port_subtree {
+                    parts[c].port_sibling = tail;
+                    Some(c)
+                } else {
+                    tail
+                }
+            });
+        next.port_subtree =
+            ctx.scrollport || indexed.is_some_and(|f| f.ports) || next.port_child.is_some();
+        next.coupled = children_coupled
+            || ctx.scrollport
+            || e.slots[k].stats.escapes != 0
+            || e.nearby(k).any(|(_, c)| parts[c].coupled);
+        if next.coupled != old.coupled {
+            delta = [true; 2];
+        }
+    }
     parts.insert(k, next);
     if ctx.content.is_some() {
         l.scroll.refit(e, k, parts, old.facts(), next.facts());
     }
     Outputs::changed(delta[0], delta[1])
 }
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Call {
+    Children,
+    Window(Key),
+    Owner(Key),
+    Segment(Key, Segment),
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Segment {
+    first: u32,
+    end: u32,
+    floating: Option<bool>,
+}
 #[derive(Clone, Debug, PartialEq)]
 enum Command {
+    Order {
+        call: Call,
+        clip: pose::Aperture,
+        bounds: skia_safe::Rect,
+        defer_clips: bool,
+    },
+    ScrollThumb(Key, Rect, Rect, usize),
     Fill(Rect, Brush),
     Thumb(Rect, Rect), // full pill and its stationary clip, not a layout child
     Image(image::Sample),
     Group {
         alpha: u8,
-        bounds: skia_safe::Rect,
+        bounds: opacity::Extent,
         end: usize,
     },
     Restore,
@@ -528,18 +682,18 @@ impl Command {
 #[derive(Default, PartialEq)]
 pub(crate) struct Drawing {
     materials: Materials,
-    commands: Vec<(Scope, Command)>,
+    commands: Buffer<(Scope, Command)>,
     clips: Clips,
     planes: Planes,
     shadow_guards: Vec<pose::ShadowGuard>,
     scope: Scope,
-    ids: Vec<u16>,
-    positions: Vec<Point>,
+    ids: Buffer<u16>,
+    positions: Buffer<Point>,
 }
 impl Drawing {
     fn push(&mut self, cmd: Command) {
         let scope = if matches!(cmd, Command::Group { .. } | Command::Restore) {
-            Scope::default() // opacity bounds are already in viewport coordinates
+            Scope::default() // end_group sets a shared moving plane when there is one
         } else {
             self.scope
         };
@@ -591,8 +745,13 @@ pub(super) struct Output {
     draw: Buffers<Drawing, 8>,
     hits: Buffers<Hits, 4>,
     navigation: Option<navigation::Bank>,
-    installed: [Option<(Key, u64)>; 2],
-    pending: [Option<(Key, u64)>; 2],
+    local: recording::Cache,
+    packing_local: bool,
+    partition: Option<Key>,
+    inline_base: Option<(inline::Span, PaintContext)>,
+    marker: bool,
+    installed: [Option<(Key, u64, u64)>; 2],
+    pending: [Option<(Key, u64, u64)>; 2],
     dirty: [bool; 2],
     #[cfg(test)]
     pub(super) mounted_visits: [usize; 2],
@@ -616,8 +775,13 @@ enum Visit {
         release: usize,
     },
     EndFloat(usize, Option<bands::Chain>),
+    Segment(Key, Segment, u32),
     ReleaseFloat(bands::Chain),
     Chrome,
+    Contents {
+        wheel: u32,
+        local: bool,
+    },
     Border,
     Opacity(usize),
 }
@@ -669,6 +833,19 @@ impl Output {
         }
         Ok(())
     }
+    pub(in crate::tree) fn reserve_recordings(
+        &mut self,
+        sites: Sites,
+        b: Budget,
+    ) -> Result<(), String> {
+        let d = self.draw.build.capacities();
+        let readers = self.draw.readers();
+        let h = self.hits.build.capacities();
+        recording_charge(sites, d, h, readers, b)?;
+        self.local.reserve(sites, d, h, readers, b)?;
+        self.fits.reserve_versions(sites.images, readers + 2, b)?;
+        self.index.versions.reserve(d[4], d[5], readers + 2, b)
+    }
     pub fn reserve_for(
         &mut self,
         owners: usize,
@@ -699,7 +876,16 @@ impl Output {
     }
     // Only an *unsealed* stream can have outstanding bitmap jobs. Accepted
     // edits may supersede those jobs but must never alter a sealed drawing.
-    pub(super) fn cancel_fits(&mut self) {
+    pub(super) fn cancel_fits(&mut self, e: &mut Elements) {
+        for k in self.fits.abandon() {
+            if e.slots.get(k).is_some_and(|m| m.detached.is_none()) {
+                e.slots[k].change.image_draft = true;
+                e.touch(k);
+            }
+        }
+        self.reset_fits();
+    }
+    fn reset_fits(&mut self) {
         if self.fits.unbound() {
             self.fits.reset();
             self.pending[0] = self.installed[0];
@@ -709,17 +895,58 @@ impl Output {
     }
     // A newly visible material may be keyed far beyond the previous window.
     // Make its index slot addressable on the declaration edit, not in packing.
-    pub(super) fn prepare_material(&mut self, k: Key) {
-        self.index.prepare(k);
+    pub(super) fn prepare_material(&mut self, e: &Elements, k: Key) {
+        self.fits.check_reader(k, e);
+        self.index.prepare(e, k);
     }
-    pub fn collect(&mut self, e: &Elements, root: Option<Key>, layers: &Layers) {
-        #[cfg(test)]
-        {
-            self.mounted_visits = [0; 2];
-            self.packed_children = [0; 2];
-        }
+    pub(in crate::tree) fn forget_material(&mut self, k: Key) {
+        self.fits.forget_reader(k);
+        self.index.forget(k);
+    }
+    #[cfg(test)]
+    pub fn recorded(&self) -> [usize; 2] {
+        self.local.recorded
+    }
+    #[cfg(test)]
+    pub fn assembly(&self) -> (usize, [usize; 3]) {
+        (self.local.ordinals, pages::meter::BYTES.get())
+    }
+    #[cfg(test)]
+    pub fn reset_work(&mut self) {
+        self.fits.additions = 0;
+        pages::meter::BYTES.set([0; 3]);
+        self.local.ordinals = 0;
+        self.mounted_visits = [0; 2];
+        self.packed_children = [0; 2];
+        self.local.recorded = [0; 2];
+    }
+    pub(in crate::tree) fn prepare_window(
+        &mut self,
+        e: &Elements,
+        l: &mut Layers,
+        k: Key,
+        host: Key,
+        selection: (u64, bool),
+        w: &mut Window,
+    ) -> bool {
+        let mut local = std::mem::take(&mut self.local);
+        let structural = local.prepare(self, e, l, k, host, selection, w);
+        self.local = local;
+        structural
+    }
+    pub(in crate::tree) fn prepare_owner(&mut self, e: &Elements, l: &mut Layers, k: Key) {
+        let mut local = std::mem::take(&mut self.local);
+        local.standalone(self, e, l, k);
+        self.local = local;
+    }
+    pub(in crate::tree) fn retire_local(&self, w: &mut Window, i: usize, k: Key, s: Outputs) {
+        self.local.retire(w, i, k, s);
+    }
+    fn collect(&mut self, e: &Elements, root: Option<Key>, layers: &Layers) {
+        self.fits.tracking = self.scrolls != 0 && !layers.scroll.exhaustive();
+        let mut shell = false;
         for side in 0..2 {
-            let stamp = root.map(|k| (k, layers.parts[k].ports[side].revision));
+            let stamp = root.map(|k| (k, layers.parts[k].ports[side].revision, layers.edge_epoch));
             if self.pending[side] == stamp {
                 continue;
             }
@@ -731,368 +958,697 @@ impl Output {
             if !self.dirty[side] {
                 continue;
             }
+            self.local.maps.begin(side);
             if side == 0 {
-                self.index.begin();
-                #[cfg(test)]
-                {
-                    self.fits.additions = 0;
-                }
+                self.index.begin(false);
                 self.draw.build.clear()
             } else {
                 self.hits.build.clear()
             }
-            self.stack.extend(root.map(|k| {
-                (
-                    k,
+            self.pack(e, root, layers, side);
+            self.local.maps.end(side);
+            if side == 0 {
+                shell = true;
+            }
+        }
+        if shell || self.fits.new_drafts() {
+            self.fits.finish_targets();
+        }
+        self.fits.bind(&mut self.draw.build);
+    }
+    // The ordinary body is one retained call. Its exported roots still enter
+    // the common FIFO alongside other owners. Follow only exporting branches,
+    // in submission (not float paint) order, carrying their establishing scopes.
+    fn exports(&mut self, e: &Elements, l: &Layers, k: Key, side: usize, mut branch: Branch) {
+        if !l.parts[k].ports[side].exports {
+            return;
+        }
+        let ctx = l.painted(k);
+        let a = &e.attrs[k];
+        if side == 0 && a.opacity == Some(0) {
+            return;
+        }
+        let (planes, clips) = if side == 0 {
+            (&mut self.draw.build.planes, &mut self.draw.build.clips)
+        } else {
+            (&mut self.hits.build.planes, &mut self.hits.build.clips)
+        };
+        let Some(p) = planes.branch(
+            branch.escape.plane,
+            branch.escape.mask,
+            a,
+            PaintContext {
+                boundary: ctx.escape_boundary,
+                ..ctx
+            },
+            side == 1,
+        ) else {
+            return;
+        };
+        branch.escape.plane = p;
+        if a.clip_nearby {
+            let shape = ctx.inner_guard(a, a.decor.rounded_inner(ctx.frame, ctx.scale));
+            branch.escape.mask = clips.add(branch.escape.mask, Some(shape));
+        }
+        if side == 0
+            && let Some(alpha) = a.opacity
+        {
+            branch.group = self.ancestry.child(branch.group, alpha);
+        }
+        self.submit_escapes(e, k, l, side, &mut branch);
+        for (slot, c) in e.nearby(k) {
+            if slot == Slot::Behind {
+                self.exports(e, l, c, side, branch);
+            }
+        }
+        if !e
+            .layout_parent(k)
+            .is_some_and(|p| e.slots[p].shape == Shape::Paragraph && e.float_side(k).is_none())
+        {
+            for &c in e.children(k) {
+                self.exports(e, l, c, side, branch);
+            }
+        }
+    }
+    fn reference(
+        &mut self,
+        e: &Elements,
+        l: &Layers,
+        k: Key,
+        side: usize,
+        scope: Scope,
+        branch: Branch,
+    ) -> bool {
+        if self.packing_local || !l.band_owner(e, k) {
+            return false;
+        }
+        let r = &l.projected[k].saved[side];
+        if !r.valid(e, l, k, side) {
+            return false;
+        }
+        let ctx = l.painted(k);
+        let wheel = branch.wheel;
+        self.exports(e, l, k, side, branch);
+        if r.counts() == [0; 3] {
+            return true;
+        }
+        self.local.maps.include_owner(r, side);
+        let clip = ctx.boundary;
+        if side == 0 {
+            self.draw.build.scope = scope;
+            self.draw.build.push(Command::Order {
+                call: Call::Owner(k),
+                bounds: r.placed_bounds(),
+                clip: pose::Aperture {
+                    body: clip,
+                    media: if e.slots[k].shape == Shape::Image {
+                        ctx.child_clip
+                    } else {
+                        clip
+                    },
+                },
+                defer_clips: l.parts[k].defer_clips,
+            });
+        } else {
+            self.hits.build.items.push(Hit {
+                kind: HitKind::Owner,
+                actions: Actions::default(),
+                wheel,
+                scope,
+                key: r.key.unwrap(),
+                id: e.slots[k].id,
+                rect: clip,
+                origin: [0.; 2],
+                scale: ctx.scale,
+            });
+        }
+        true
+    }
+    fn pack(&mut self, e: &Elements, root: Option<Key>, layers: &Layers, side: usize) {
+        self.stack.extend(root.map(|k| {
+            (
+                k,
+                self.inline_base.map_or(
                     Visit::Node {
                         rounded_parent: false,
                         branch: Branch::default(),
                     },
-                    Scope::default(),
-                )
-            }));
-            loop {
-                let (k, visit, scope) = if let Some(local) = self.stack.pop() {
-                    local
-                } else if let Some((k, branch, new_band)) = self.bands.next() {
-                    if side == 0 {
-                        if new_band {
-                            self.ancestry
-                                .switch(&mut self.draw.build, layers.viewport, 0);
-                        }
-                        self.ancestry
-                            .switch(&mut self.draw.build, layers.viewport, branch.group);
+                    |(span, _)| Visit::Inline(span, Branch::default()),
+                ),
+                Scope::default(),
+            )
+        }));
+        loop {
+            let (k, visit, scope) = if let Some(local) = self.stack.pop() {
+                local
+            } else if let Some((k, branch, new_band)) = self.bands.next() {
+                if side == 0 {
+                    if new_band {
+                        self.ancestry.switch(&mut self.draw.build, 0);
                     }
-                    let Coords { mask, plane } = branch.escape;
-                    (
-                        k,
-                        Visit::Node {
-                            rounded_parent: false,
-                            branch,
-                        },
-                        Scope {
-                            mask,
-                            plane,
-                            guard: branch.escape,
-                            ..Scope::default()
-                        },
-                    )
-                } else {
-                    break;
-                };
-                let Scope {
-                    mask,
-                    plane: parent,
-                    ..
-                } = scope;
-                let (rounded_parent, mut branch) = match visit {
-                    Visit::Leaf { bleed } => {
-                        self.leaf(e, k, layers, scope, bleed);
-                        continue;
-                    }
-                    Visit::Chrome => {
-                        self.chrome(e, k, layers, side, scope);
-                        continue;
-                    }
-                    Visit::Inline(span, branch) => {
-                        self.inline_owner(e, k, layers, side, scope, (span, branch));
-                        continue;
-                    }
-                    Visit::Ink(span, wheel) => {
-                        self.inline_ink(
-                            e,
-                            k,
-                            layers,
-                            side,
-                            scope,
-                            (span, wheel, inline::Part::Content),
-                        );
-                        continue;
-                    }
-                    Visit::Float {
-                        rounded_parent,
+                    self.ancestry.switch(&mut self.draw.build, branch.group);
+                }
+                let Coords { mask, plane } = branch.escape;
+                (
+                    k,
+                    Visit::Node {
+                        rounded_parent: false,
                         branch,
-                        release,
-                    } => {
-                        let enclosing = self.bands.begin_float();
-                        self.stack
-                            .push((k, Visit::EndFloat(release, enclosing), scope));
-                        (rounded_parent, branch)
+                    },
+                    Scope {
+                        mask,
+                        plane,
+                        guard: branch.escape,
+                        ..Scope::default()
+                    },
+                )
+            } else {
+                break;
+            };
+            let Scope {
+                mask,
+                plane: parent,
+                ..
+            } = scope;
+            let (rounded_parent, mut branch) = match visit {
+                Visit::Leaf { bleed } => {
+                    self.leaf(e, k, layers, scope, bleed);
+                    continue;
+                }
+                Visit::Chrome => {
+                    self.chrome(e, k, layers, side, scope);
+                    continue;
+                }
+                Visit::Inline(span, branch) => {
+                    if !self.reference(e, layers, k, side, scope, branch) {
+                        self.inline_owner(e, k, layers, side, scope, (span, branch));
                     }
-                    Visit::EndFloat(release, enclosing) => {
-                        self.stack[release].1 =
-                            Visit::ReleaseFloat(self.bands.end_float(enclosing));
-                        continue;
+                    continue;
+                }
+                Visit::Ink(span, wheel) => {
+                    self.inline_ink(
+                        e,
+                        k,
+                        layers,
+                        side,
+                        scope,
+                        (span, wheel, inline::Part::Content),
+                    );
+                    continue;
+                }
+                Visit::Float {
+                    rounded_parent,
+                    branch,
+                    release,
+                } => {
+                    let enclosing = self.bands.begin_float();
+                    self.stack
+                        .push((k, Visit::EndFloat(release, enclosing), scope));
+                    (rounded_parent, branch)
+                }
+                Visit::EndFloat(release, enclosing) => {
+                    self.stack[release].1 = Visit::ReleaseFloat(self.bands.end_float(enclosing));
+                    continue;
+                }
+                Visit::ReleaseFloat(chain) => {
+                    self.bands.release_float(chain);
+                    continue;
+                }
+                Visit::Segment(port, segment, wheel) => {
+                    self.local.maps.mark(side);
+                    let clip = if port == k {
+                        Rect::UNBOUNDED
+                    } else {
+                        layers.painted(k).child_clip
+                    };
+                    if side == 0 {
+                        self.draw.build.scope = scope;
+                        self.draw.build.push(Command::Order {
+                            call: Call::Segment(port, segment),
+                            bounds: sk(clip).with_outset((1., 1.)),
+                            clip: if k == port {
+                                pose::Aperture::fixed(clip)
+                            } else {
+                                pose::Aperture::children(layers.painted(k))
+                            },
+                            defer_clips: layers.parts[k].defer_clips,
+                        });
+                    } else {
+                        self.hits.build.items.push(Hit {
+                            kind: HitKind::Segment(segment),
+                            wheel,
+                            key: Attachment(port, e.slots[port].attachment),
+                            scope,
+                            actions: Actions::default(),
+                            id: e.slots[port].id,
+                            rect: clip,
+                            origin: [0.; 2],
+                            scale: layers.painted(k).scale,
+                        });
                     }
-                    Visit::ReleaseFloat(chain) => {
-                        self.bands.release_float(chain);
-                        continue;
+                    continue;
+                }
+                Visit::Contents { wheel, local } => {
+                    if !local {
+                        self.local.maps.mark(side);
                     }
-                    Visit::Border => {
-                        let ctx = layers.painted(k);
+                    let ctx = layers.painted(k);
+                    if side == 0 {
                         let draw = &mut self.draw.build;
                         draw.scope = scope;
-                        let material = self.index.get(draw, e, k);
+                        draw.push(Command::Order {
+                            call: if local {
+                                Call::Children
+                            } else {
+                                Call::Window(k)
+                            },
+                            clip: pose::Aperture::children(ctx),
+                            bounds: sk(pose::Aperture::children(ctx).media).with_outset((1., 1.)),
+                            defer_clips: layers.parts[k].defer_clips,
+                        });
+                    } else {
+                        self.hits.build.items.push(Hit {
+                            kind: if local {
+                                HitKind::Children
+                            } else {
+                                HitKind::Content
+                            },
+                            actions: Actions::default(),
+                            wheel,
+                            scope,
+                            key: Attachment(k, e.slots[k].attachment),
+                            id: e.slots[k].id,
+                            rect: ctx.child_clip,
+                            origin: [0.; 2],
+                            scale: ctx.scale,
+                        });
+                    }
+                    continue;
+                }
+                Visit::Border => {
+                    let ctx = layers.painted(k);
+                    let draw = &mut self.draw.build;
+                    draw.scope = scope;
+                    let material = self.index.get(draw, e, k);
+                    draw.push(Command::Box {
+                        material,
+                        rect: ctx.frame,
+                        clip: ctx.box_clip(e.slots[k].shape),
+                        phase: Phase::Border,
+                    });
+                    continue;
+                }
+                Visit::Opacity(start) => {
+                    self.draw.build.end_group(start);
+                    continue;
+                }
+                Visit::Node {
+                    rounded_parent,
+                    branch,
+                } => (rounded_parent, branch),
+            };
+            if self.reference(e, layers, k, side, scope, branch) {
+                continue;
+            }
+            let p = layers.parts[k].at(layers.projection(k));
+            if !p.ports[side].nonempty {
+                continue;
+            }
+            #[cfg(test)]
+            if e.slots[k].slot.is_some() {
+                self.mounted_visits[side] += 1;
+            }
+            let ctx = layers.painted(k);
+            let a = &e.attrs[k];
+            let decor = a.decor;
+            let (planes, clips) = if side == 0 {
+                (&mut self.draw.build.planes, &self.draw.build.clips)
+            } else {
+                (&mut self.hits.build.planes, &self.hits.build.clips)
+            };
+            let stop = if e.slots[k].shape == Shape::Image
+                && a.posed()
+                && rounded_parent
+                && !a.image_host_clip
+            {
+                clips.parent(mask)
+            } else {
+                mask
+            };
+            let Some(id) = planes.branch(parent, stop, a, ctx, side == 1) else {
+                continue;
+            };
+            let scope = Scope { plane: id, ..scope };
+            let plane = planes.get(id);
+            let exports = p.ports[side].exports;
+            if exports
+                && branch
+                    .pose(
+                        planes,
+                        Coords {
+                            plane: parent,
+                            mask: stop,
+                        },
+                        id,
+                        a,
+                        ctx,
+                        side,
+                    )
+                    .is_none()
+            {
+                continue;
+            }
+            if side == 0 {
+                let draw = &mut self.draw.build;
+                draw.scope = scope;
+                if let Some(alpha) = p.opacity {
+                    if alpha == 0 {
+                        continue;
+                    }
+                    if exports {
+                        branch.group = self.ancestry.child(branch.group, alpha);
+                    }
+                    let start = draw.begin_group(alpha);
+                    self.stack.push((k, Visit::Opacity(start), scope));
+                }
+                let material = p.paint.decorated.then(|| self.index.get(draw, e, k));
+                let backdrop = p.art && e.slots[k].shape != Shape::Image;
+                if backdrop {
+                    if let Some(material) = material.filter(|_| decor.shadows.len != 0) {
+                        draw.push(Command::Box {
+                            material,
+                            rect: ctx.frame,
+                            clip: ctx.clip,
+                            phase: Phase::OuterShadow,
+                        });
+                    }
+                    if let Some(sample) = image::Sample::new(
+                        e,
+                        k,
+                        ctx,
+                        (plane, layers.paint[k].transformed),
+                        0,
+                        None,
+                        &mut self.fits,
+                    ) {
+                        draw.scope.mask = draw
+                            .clips
+                            .add(mask, Rounded::new(ctx.frame, decor.radii(ctx.scale)));
+                        draw.push(Command::Image(sample));
+                        draw.scope.mask = mask;
+                    }
+                }
+                if let Some(material) = material {
+                    if e.attrs[k].background.is_some_and(|v| v & 255 != 0)
+                        || decor.background_gradient.len != 0
+                        || decor.shadows.len != 0
+                    {
                         draw.push(Command::Box {
                             material,
                             rect: ctx.frame,
                             clip: ctx.box_clip(e.slots[k].shape),
-                            phase: Phase::Border,
+                            phase: if backdrop { Phase::Inset } else { Phase::Under },
                         });
-                        continue;
                     }
-                    Visit::Opacity(start) => {
-                        self.draw.build.end_group(start, layers.viewport);
-                        continue;
+                    if decor.border != [0.; 4]
+                        && (decor.border_color.is_some() || decor.border_gradient.len != 0)
+                    {
+                        self.stack.push((k, Visit::Border, scope));
                     }
-                    Visit::Node {
-                        rounded_parent,
-                        branch,
-                    } => (rounded_parent, branch),
-                };
-                let p = layers.parts[k].at(layers.projection(k));
-                if !p.ports[side].nonempty {
-                    continue;
+                } else if let Some((r, c)) = p.paint.fill {
+                    draw.push(Command::Fill(r, Brush::Solid(c)))
                 }
-                #[cfg(test)]
-                if e.slots[k].slot.is_some() {
-                    self.mounted_visits[side] += 1;
+            } else if let Some(mut hit) = p.hit {
+                let hits = &mut self.hits.build;
+                hit.scope = Scope {
+                    mask: hits
+                        .clips
+                        .add(mask, Rounded::new(ctx.frame, decor.radii(ctx.scale))),
+                    ..scope
+                };
+                hit.wheel = branch.wheel;
+                hits.items.push(hit)
+            }
+            let mut wheel = branch.wheel;
+            if ctx.bars
+                && let Some(rect) = ctx.frame.intersection(ctx.clip)
+            {
+                let mut chrome = scope;
+                let radius = Rounded::new(ctx.frame, decor.radii(ctx.scale));
+                if side == 1 {
+                    let hits = &mut self.hits.build;
+                    chrome.mask = hits.clips.add(mask, radius);
+                    wheel = hits.port(e, k, ctx, (chrome, rect), layers.scroll.view(k), wheel);
+                } else {
+                    chrome.mask = self.draw.build.clips.add(mask, radius);
                 }
-                let ctx = layers.painted(k);
-                let a = &e.attrs[k];
-                let decor = a.decor;
-                let (planes, clips) = if side == 0 {
-                    (&mut self.draw.build.planes, &self.draw.build.clips)
-                } else {
-                    (&mut self.hits.build.planes, &self.hits.build.clips)
-                };
-                let stop = if e.slots[k].shape == Shape::Image
-                    && a.posed()
-                    && rounded_parent
-                    && !a.image_host_clip
-                {
-                    clips.parent(mask)
-                } else {
-                    mask
-                };
-                let Some(id) = planes.branch(parent, stop, a, ctx, side == 1) else {
-                    continue;
-                };
-                let scope = Scope { plane: id, ..scope };
-                let plane = planes.get(id);
-                let exports = p.ports[side].exports;
-                if exports
-                    && branch
-                        .pose(
-                            planes,
-                            Coords {
-                                plane: parent,
-                                mask: stop,
-                            },
-                            id,
-                            a,
-                            ctx,
-                            side,
-                        )
-                        .is_none()
-                {
-                    continue;
+                self.stack.push((k, Visit::Chrome, chrome));
+            }
+            let inner = decor.rounded_inner(ctx.frame, ctx.scale);
+            let clips = if side == 0 {
+                &mut self.draw.build.clips
+            } else {
+                &mut self.hits.build.clips
+            };
+            let mask = clips.add(mask, inner);
+            let inner_shape = || ctx.inner_guard(a, inner);
+            if exports && a.clip_nearby {
+                // This includes the host's own escaping slots.
+                branch.escape.mask = clips.add(branch.escape.mask, Some(inner_shape()));
+            }
+            let mut content = Scope { mask, ..scope };
+            if ctx.scrollport {
+                if inner.is_none() {
+                    content.mask = clips.add(mask, Some(inner_shape()));
                 }
                 if side == 0 {
-                    let draw = &mut self.draw.build;
-                    draw.scope = scope;
-                    if let Some(alpha) = p.opacity {
-                        if alpha == 0 {
-                            continue;
-                        }
-                        if exports {
-                            branch.group = self.ancestry.child(branch.group, alpha);
-                        }
-                        let start = draw.begin_group(alpha);
-                        self.stack.push((k, Visit::Opacity(start), scope));
-                    }
-                    let material = p.paint.decorated.then(|| self.index.get(draw, e, k));
-                    let backdrop = p.art && e.slots[k].shape != Shape::Image;
-                    if backdrop {
-                        if let Some(material) = material.filter(|_| decor.shadows.len != 0) {
-                            draw.push(Command::Box {
-                                material,
-                                rect: ctx.frame,
-                                clip: ctx.clip,
-                                phase: Phase::OuterShadow,
-                            });
-                        }
-                        if let Some(sample) =
-                            image::Sample::new(e, k, ctx, plane, 0, None, &mut self.fits)
-                        {
-                            draw.scope.mask = draw
-                                .clips
-                                .add(mask, Rounded::new(ctx.frame, decor.radii(ctx.scale)));
-                            draw.push(Command::Image(sample));
-                            draw.scope.mask = mask;
-                        }
-                    }
-                    if let Some(material) = material {
-                        if e.attrs[k].background.is_some_and(|v| v & 255 != 0)
-                            || decor.background_gradient.len != 0
-                            || decor.shadows.len != 0
-                        {
-                            draw.push(Command::Box {
-                                material,
-                                rect: ctx.frame,
-                                clip: ctx.box_clip(e.slots[k].shape),
-                                phase: if backdrop { Phase::Inset } else { Phase::Under },
-                            });
-                        }
-                        if decor.border != [0.; 4]
-                            && (decor.border_color.is_some() || decor.border_gradient.len != 0)
-                        {
-                            self.stack.push((k, Visit::Border, scope));
-                        }
-                    } else if let Some((r, c)) = p.paint.fill {
-                        draw.push(Command::Fill(r, Brush::Solid(c)))
-                    }
-                } else if let Some(mut hit) = p.hit {
-                    let hits = &mut self.hits.build;
-                    hit.scope = Scope {
-                        mask: hits
-                            .clips
-                            .add(mask, Rounded::new(ctx.frame, decor.radii(ctx.scale))),
-                        ..scope
-                    };
-                    hit.wheel = branch.wheel;
-                    hits.items.push(hit)
+                    let guards = &mut self.draw.build.shadow_guards;
+                    guards.push(pose::ShadowGuard {
+                        parent: scope.shadow,
+                        plane: id,
+                        inner: inner_shape(),
+                        axes: a.scroll.enabled,
+                    });
+                    content.shadow = guards.len() as u32;
                 }
-                let mut wheel = branch.wheel;
-                if ctx.bars
-                    && let Some(rect) = ctx.frame.intersection(ctx.clip)
-                {
-                    let mut chrome = scope;
-                    let radius = Rounded::new(ctx.frame, decor.radii(ctx.scale));
-                    if side == 1 {
-                        let hits = &mut self.hits.build;
-                        chrome.mask = hits.clips.add(mask, radius);
-                        wheel = hits.port(e, k, ctx, (chrome, rect), layers.scroll.view(k), wheel);
-                    } else {
-                        chrome.mask = self.draw.build.clips.add(mask, radius);
-                    }
-                    self.stack.push((k, Visit::Chrome, chrome));
+            }
+            self.submit_escapes(e, k, layers, side, &mut branch);
+            if side == 0 && (p.paint.text.is_some() || e.slots[k].shape == Shape::Image) {
+                let bleed = u8::from(rounded_parent) + u8::from(inner.is_some());
+                let scope = if e.slots[k].shape == Shape::Image {
+                    Scope { mask, ..scope }
+                } else {
+                    scope
+                };
+                if e.order(k).tags.contains(&Slot::Behind) {
+                    self.stack.push((k, Visit::Leaf { bleed }, scope));
+                } else {
+                    self.leaf(e, k, layers, scope, bleed);
                 }
-                let inner = decor.rounded_inner(ctx.frame, ctx.scale);
+            }
+            let scope = Scope { mask, ..scope };
+            let paragraph = e.slots[k].shape == Shape::Paragraph;
+            let mut child_branch = Branch { wheel, ..branch };
+            if ctx.scrollport && exports && !a.clip_nearby {
                 let clips = if side == 0 {
                     &mut self.draw.build.clips
                 } else {
                     &mut self.hits.build.clips
                 };
-                let mask = clips.add(mask, inner);
-                let inner_shape = || ctx.inner_guard(a, inner);
-                if exports && a.clip_nearby {
-                    // This includes the host's own escaping slots.
-                    branch.escape.mask = clips.add(branch.escape.mask, Some(inner_shape()));
-                }
-                let mut content = Scope { mask, ..scope };
-                if ctx.scrollport {
-                    if inner.is_none() {
-                        content.mask = clips.add(mask, Some(inner_shape()));
-                    }
-                    if side == 0 {
-                        let guards = &mut self.draw.build.shadow_guards;
-                        guards.push(pose::ShadowGuard {
-                            parent: scope.shadow,
-                            plane: id,
-                            inner: inner_shape(),
-                            axes: a.scroll.enabled,
-                        });
-                        content.shadow = guards.len() as u32;
-                    }
-                }
-                self.submit_escapes(e, k, layers, side, &mut branch);
-                if side == 0 && (p.paint.text.is_some() || e.slots[k].shape == Shape::Image) {
-                    let bleed = u8::from(rounded_parent) + u8::from(inner.is_some());
-                    let scope = if e.slots[k].shape == Shape::Image {
-                        Scope { mask, ..scope }
-                    } else {
-                        scope
-                    };
-                    if e.order(k).tags.contains(&Slot::Behind) {
-                        self.stack.push((k, Visit::Leaf { bleed }, scope));
-                    } else {
-                        self.leaf(e, k, layers, scope, bleed);
-                    }
-                }
-                let scope = Scope { mask, ..scope };
-                let paragraph = e.slots[k].shape == Shape::Paragraph;
-                let mut child_branch = Branch { wheel, ..branch };
-                if ctx.scrollport && exports && !a.clip_nearby {
-                    let clips = if side == 0 {
-                        &mut self.draw.build.clips
-                    } else {
-                        &mut self.hits.build.clips
-                    };
-                    child_branch.escape.mask = clips.add(branch.escape.mask, Some(inner_shape()));
-                }
-                let mut ordinal = self.stack.len();
-                let park_floats =
-                    paragraph && self.inline_visits(e, k, layers, side, content, child_branch);
-                let rounded_parent = inner.is_some() && !ctx.scrollport;
-                let mut coverage = if side == 0
-                    && !paragraph
-                    && e.children(k).len() > 1
-                    && !ctx.transformed
-                    && a.opacity.is_none()
-                    && e.slots[k].stats.mounts == 0
-                    && !layers.scroll.exhaustive()
-                {
-                    coverage::Coverage::within(content, &self.draw.build.clips)
+                child_branch.escape.mask = clips.add(branch.escape.mask, Some(inner_shape()));
+            }
+            let local = self.partition == Some(k);
+            let window = (!self.packing_local)
+                .then(|| layers.scroll.recorded(k))
+                .flatten();
+            if let Some(w) = window.filter(|w| w.banded) {
+                self.local
+                    .maps
+                    .include(w, side, scroll::delegated(e, k).is_none());
+                let planes = if side == 0 {
+                    &mut self.draw.build.planes
                 } else {
-                    None
+                    &mut self.hits.build.planes
                 };
-                for &c in layers.scroll.children_rev(e, k) {
-                    #[cfg(test)]
-                    {
-                        self.packed_children[side] += 1;
-                    }
-                    if !layers.parts[c].ports[side].nonempty
-                        || (paragraph && e.float_side(c).is_none())
-                        || coverage
-                            .as_mut()
-                            .is_some_and(|cover| cover.hides(e, layers, c))
-                    {
-                        continue;
-                    }
-                    let visit = if park_floats && layers.parts[c].ports[side].exports {
-                        // Both traversals use reverse declaration order. Advance one cursor
-                        // through the inline visits; park the chain directly on its release.
-                        while self.stack[ordinal].0 != c {
-                            ordinal += 1;
-                        }
-                        let release = ordinal;
-                        ordinal += 1;
-                        Visit::Float {
-                            rounded_parent,
-                            branch: child_branch,
-                            release,
-                        }
-                    } else {
-                        Visit::Node {
-                            rounded_parent,
-                            branch: child_branch,
-                        }
-                    };
-                    self.stack.push((c, visit, content));
+                content.plane = planes.content(
+                    content.plane,
+                    content.mask,
+                    pose::Aperture::children(ctx),
+                    k,
+                );
+                if exports {
+                    child_branch.escape.plane = planes.content(
+                        child_branch.escape.plane,
+                        child_branch.escape.mask,
+                        pose::Aperture::fixed(ctx.content_escape),
+                        k,
+                    );
                 }
+            } else if local || window.is_some() {
+                self.marker |= local;
+                if let Some(w) = window {
+                    self.local.maps.include(w, side, true);
+                }
+                self.stack
+                    .push((k, Visit::Contents { wheel, local }, content));
                 self.behinds(e, k, layers, side, scope, branch);
+                continue;
             }
-            self.bands.finish();
-            if side == 0 {
-                self.ancestry
-                    .switch(&mut self.draw.build, layers.viewport, 0);
-                self.ancestry.finish();
-                self.draw.build.scope = Scope::default();
-                self.fits.finish_targets();
+            let rounded_parent = inner.is_some() && !ctx.scrollport;
+            if !self.packing_local
+                && let Some(port) = scroll::order_port(e, k)
+                && let Some(w) = layers.scroll.recorded(port).filter(|w| w.banded)
+            {
+                if k != port {
+                    self.local.maps.enable_rows(w, side);
+                }
+                self.band_children(
+                    e,
+                    layers,
+                    (k, port),
+                    side,
+                    (content, child_branch),
+                    rounded_parent,
+                );
+                self.behinds(e, k, layers, side, scope, branch);
+                continue;
             }
+            let mut ordinal = self.stack.len();
+            let park_floats =
+                paragraph && self.inline_visits(e, k, layers, side, content, child_branch);
+            let mut coverage = if side == 0
+                && !paragraph
+                && e.children(k).len() > 1
+                && !ctx.transformed
+                && a.opacity.is_none()
+                && e.slots[k].stats.mounts == 0
+                && !window.is_some_and(|w| w.banded)
+                && !layers.scroll.exhaustive()
+            {
+                coverage::Coverage::within(content, &self.draw.build.clips)
+            } else {
+                None
+            };
+            for &c in layers.scroll.children_rev(e, k) {
+                #[cfg(test)]
+                {
+                    self.packed_children[side] += 1;
+                }
+                if !layers.parts[c].ports[side].nonempty
+                    || (paragraph && e.float_side(c).is_none())
+                    || coverage
+                        .as_mut()
+                        .is_some_and(|cover| cover.hides(e, layers, c))
+                {
+                    continue;
+                }
+                let visit = if park_floats && layers.parts[c].ports[side].exports {
+                    // Both traversals use reverse declaration order. Advance one cursor
+                    // through the inline visits; park the chain directly on its release.
+                    while self.stack[ordinal].0 != c {
+                        ordinal += 1;
+                    }
+                    let release = ordinal;
+                    ordinal += 1;
+                    Visit::Float {
+                        rounded_parent,
+                        branch: child_branch,
+                        release,
+                    }
+                } else {
+                    Visit::Node {
+                        rounded_parent,
+                        branch: child_branch,
+                    }
+                };
+                self.stack.push((c, visit, content));
+            }
+            self.behinds(e, k, layers, side, scope, branch);
         }
-        self.fits.bind(&mut self.draw.build);
+        self.bands.finish();
+        if side == 0 {
+            self.ancestry.switch(&mut self.draw.build, 0);
+            self.ancestry.finish();
+            self.draw.build.scope = Scope::default();
+        }
+    }
+    fn band_children(
+        &mut self,
+        e: &Elements,
+        l: &Layers,
+        (k, port): (Key, Key),
+        side: usize,
+        (scope, branch): (Scope, Branch),
+        rounded_parent: bool,
+    ) {
+        let paragraph = e.slots[k].shape == Shape::Paragraph;
+        let park = paragraph && l.parts[k].ports[side].exports;
+        let mut ordinal = self.stack.len();
+        // Two passes only for paragraphs: float paint precedes inline ink, but
+        // float exports are released at their ordinary ordinal in the band's FIFO.
+        let mut pass = |floating: Option<bool>| {
+            l.scroll.bands_rev(e, k, port, &l.parts, |s| {
+                let (owner, visit) = match s {
+                    scroll::BandPart::Rows(r) => (
+                        k,
+                        Visit::Segment(
+                            port,
+                            Segment {
+                                first: r.start as u32,
+                                end: r.end as u32,
+                                floating,
+                            },
+                            branch.wheel,
+                        ),
+                    ),
+                    scroll::BandPart::Branch(c) => {
+                        let float = e.float_side(c).is_some();
+                        if floating == Some(false) {
+                            if !float {
+                                (c, Visit::Inline(inline::Span::at(l, k, c), branch))
+                            } else if park && l.parts[c].ports[side].exports {
+                                (c, Visit::ReleaseFloat(bands::Chain::default()))
+                            } else {
+                                return;
+                            }
+                        } else if (floating == Some(true) && !float)
+                            || !l.parts[c].ports[side].nonempty
+                        {
+                            return;
+                        } else if park && float && l.parts[c].ports[side].exports {
+                            while self.stack[ordinal].0 != c {
+                                ordinal += 1;
+                            }
+                            let release = ordinal;
+                            ordinal += 1;
+                            (
+                                c,
+                                Visit::Float {
+                                    rounded_parent,
+                                    branch,
+                                    release,
+                                },
+                            )
+                        } else {
+                            (
+                                c,
+                                Visit::Node {
+                                    rounded_parent,
+                                    branch,
+                                },
+                            )
+                        }
+                    }
+                };
+                self.stack.push((owner, visit, scope));
+            })
+        };
+        if paragraph {
+            pass(Some(false));
+            pass(Some(true));
+        } else {
+            pass(None);
+        }
     }
     fn submit_escapes(
         &mut self,
@@ -1102,7 +1658,7 @@ impl Output {
         side: usize,
         branch: &mut Branch,
     ) {
-        if layers.parts[k].ports[side].boundary {
+        if !self.packing_local && layers.parts[k].ports[side].boundary {
             for (slot, child) in e.nearby(k) {
                 if slot.escapes() && layers.parts[child].ports[side].nonempty {
                     self.bands.push(child, *branch);
@@ -1176,7 +1732,7 @@ impl Output {
             e,
             k,
             ctx,
-            draw.planes.get(scope.plane),
+            (draw.planes.get(scope.plane), layers.paint[k].transformed),
             bleed,
             (e.attrs[k].svg_gradient.len != 0).then(|| self.index.get(draw, e, k)),
             &mut self.fits,
@@ -1199,6 +1755,7 @@ impl Output {
             self.hits.publish();
         }
         self.installed = self.pending;
+        self.local.maps.install();
         self.dirty = [false; 2];
     }
 }
@@ -1220,34 +1777,51 @@ impl Raster {
     }
     #[cfg(test)]
     pub(crate) fn has_target(&self, key: Attachment) -> bool {
-        self.tree.output.hits.current().has_target(key)
+        self.tree.output.hit_frame().has_target(key)
     }
     #[cfg(test)]
     pub(crate) fn target_at(&self, x: f32, y: f32) -> Option<(Attachment, u64, f64, f64)> {
-        self.tree
-            .output
-            .hits
-            .current()
-            .target_at(self.viewport, x, y)
+        self.tree.output.hit_frame().target_at(self.viewport, x, y)
     }
 }
 #[derive(Default)]
 pub(crate) struct Hits {
     planes: Planes,
     clips: Clips,
-    items: Vec<Hit>,
+    items: Buffer<Hit>,
     scrolls: HashMap<Attachment, ScrollHit>,
 }
-impl Hits {
+#[derive(Clone, Default)]
+pub(crate) struct HitFrame {
+    base: Arc<Hits>,
+    maps: Option<Arc<Tables>>,
+}
+impl std::ops::Deref for HitFrame {
+    type Target = Arc<Hits>;
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+impl Output {
+    fn hit_frame(&self) -> HitFrame {
+        HitFrame {
+            base: self.hits.current().clone(),
+            maps: self.local.maps.installed().cloned(),
+        }
+    }
+}
+impl HitFrame {
+    fn tables(&self) -> &Tables {
+        self.maps.as_deref().unwrap_or(&Tables::EMPTY)
+    }
     #[cfg(test)]
     pub(super) fn ids(&self) -> impl Iterator<Item = u64> + '_ {
         self.items.iter().map(|h| h.id)
     }
     #[cfg(test)]
     pub(crate) fn has_target(&self, key: Attachment) -> bool {
-        self.items
-            .iter()
-            .any(|h| h.key == key && h.actions.has(Actions::CLICK))
+        self.captured(key, 0., 0.)
+            .is_some_and(|h| h.actions.has(Actions::CLICK))
     }
     #[cfg(test)]
     pub(crate) fn target_at(&self, v: Rect, x: f32, y: f32) -> Option<(Attachment, u64, f64, f64)> {
@@ -1258,24 +1832,89 @@ impl Hits {
     // Captured endpoints use the installed source's current plane and origin,
     // not a second point hit (the pointer may now be outside every clip).
     pub(crate) fn captured(&self, key: Attachment, x: f32, y: f32) -> Option<Listener> {
-        let h = self
-            .items
-            .iter()
-            .rev()
-            .find(|h| h.key == key && h.actions.any())?;
-        let p = if let Some(plane) = self.planes.get(h.scope.plane) {
-            plane.matrix.invert()?.map_point((x, y))
-        } else {
-            (x, y).into()
-        };
-        (p.x.is_finite() && p.y.is_finite()).then(|| h.listener(p.x, p.y))
+        self.items.iter().rev().find_map(|h| {
+            if !matches!(
+                h.kind,
+                HitKind::Content | HitKind::Owner | HitKind::Segment(_)
+            ) && (h.key != key || !h.actions.any())
+            {
+                return None;
+            }
+            let p = if let Some(plane) = self.planes.installed(h.scope.plane, self.tables(), 1) {
+                if plane.bounds(sk(h.rect)).is_empty() {
+                    return None;
+                }
+                plane.matrix.invert()?.map_point((x, y))
+            } else {
+                (x, y).into()
+            };
+            if !p.x.is_finite() || !p.y.is_finite() {
+                return None;
+            }
+            let (px, py, shift) = self.point_basis(h, (x, y), (p.x, p.y));
+            if matches!(
+                h.kind,
+                HitKind::Content | HitKind::Owner | HitKind::Segment(_)
+            ) {
+                let (h, x, y) = self.program_hit(h, px, py, Some(key), shift)?;
+                Some(h.listener(x, y))
+            } else {
+                Some(h.shifted_listener(px, py, shift))
+            }
+        })
     }
-    pub(crate) fn listener_at(&self, v: Rect, x: f32, y: f32) -> Option<Listener> {
-        self.at(v, x, y)
+    fn program_hit(
+        &self,
+        h: &Hit,
+        x: f32,
+        y: f32,
+        capture: Option<Attachment>,
+        shift: [f32; 2],
+    ) -> Option<(Hit, f32, f32)> {
+        if h.kind == HitKind::Content {
+            self.tables().get(h.key.0, 1)?.hit(x, y, capture, shift)
+        } else {
+            let rect = if let Some(p) = self.planes.installed(h.scope.plane, self.tables(), 1) {
+                p.visible(h.rect)?
+            } else {
+                h.rect
+            };
+            let rect = Rect {
+                x: rect.x + shift[0],
+                y: rect.y + shift[1],
+                ..rect
+            };
+            if let HitKind::Segment(s) = h.kind {
+                self.tables()
+                    .get(h.key.0, 1)?
+                    .segment(1, s)
+                    .hit(x, y, rect, capture, shift)
+            } else {
+                self.tables()
+                    .owner(h.key.0, 1)?
+                    .hit(x, y, rect, capture, shift)
+            }
+        }
+    }
+    fn point_basis(&self, h: &Hit, screen: (f32, f32), local: (f32, f32)) -> (f32, f32, [f32; 2]) {
+        self.planes
+            .translated_point(h.scope.plane, screen, self.tables())
+            .unwrap_or((local.0, local.1, [0.; 2]))
+    }
+    pub(crate) fn listener_at(&self, v: Rect, px: f32, py: f32) -> Option<Listener> {
+        self.at(v, px, py, self.tables())
             .find_map(|(h, x, y)| match h.kind {
                 HitKind::Port => None,
-                HitKind::Bars => self.scrolls[&h.key].track(x, y).map(|_| None),
-                _ => Some(h.actions.any().then(|| h.listener(x, y))),
+                HitKind::Content | HitKind::Owner | HitKind::Segment(_) => {
+                    let (x, y, shift) = self.point_basis(h, (px, py), (x, y));
+                    self.program_hit(h, x, y, None, shift)
+                        .map(|(h, x, y)| h.actions.any().then(|| h.listener(x, y)))
+                }
+                HitKind::Bars => self.scroll_port(h.key)?.track(x, y).map(|_| None),
+                _ => Some(h.actions.any().then(|| {
+                    let (x, y, shift) = self.point_basis(h, (px, py), (x, y));
+                    h.shifted_listener(x, y, shift)
+                })),
             })
             .flatten()
     }
@@ -1289,6 +1928,11 @@ pub(crate) struct Listener {
     pub local: [f64; 2],
 }
 impl Hit {
+    fn shifted_listener(mut self, x: f32, y: f32, shift: [f32; 2]) -> Listener {
+        self.origin[0] += shift[0];
+        self.origin[1] += shift[1];
+        self.listener(x, y)
+    }
     fn listener(&self, x: f32, y: f32) -> Listener {
         Listener {
             key: self.key,
@@ -1307,22 +1951,32 @@ pub(crate) struct Scene {
     _workspace: Option<Arc<storage::Grant>>,
     pub viewport: Rect,
     pub drawing: Arc<Drawing>,
-    pub hits: Arc<Hits>,
+    pub hits: HitFrame,
     pub navigation: Option<Navigation>,
 }
 impl Scene {
+    #[cfg(test)]
+    pub(super) fn shares_order(&self, b: &Self, k: Key, side: usize) -> bool {
+        self.hits
+            .tables()
+            .get(k, side)
+            .zip(b.hits.tables().get(k, side))
+            .is_some_and(|(a, b)| a.shares_order(b, side))
+    }
     pub(crate) fn packed_counts(&self) -> [usize; 3] {
         [
-            self.drawing.commands.len(),
-            self.drawing.ids.len(),
-            self.hits.items.len(),
+            self.drawing.commands.len() + self.hits.tables().counts[0]
+                - self.hits.tables().markers[0],
+            self.drawing.ids.len() + self.hits.tables().counts[1],
+            self.hits.items.len() + self.hits.tables().counts[2] - self.hits.tables().markers[1],
         ]
     }
     pub fn rasterize(&self) -> Result<Vec<u8>, String> {
-        rasterize(self.viewport, &self.drawing)
+        rasterize(self.viewport, &self.drawing, self.hits.tables())
     }
     pub fn same_drawing(&self, other: &Self) -> bool {
         self.viewport == other.viewport
+            && self.hits.tables().same_picture(other.hits.tables())
             && (Arc::ptr_eq(&self.drawing, &other.drawing) || self.drawing == other.drawing)
     }
 }
@@ -1336,29 +1990,57 @@ impl Tree {
     pub(crate) fn reclaim_frames(&mut self) {
         self.output.draw.reclaim();
         self.output.hits.reclaim();
+        self.output.local.maps.reclaim();
+    }
+    pub(super) fn collect_output(&mut self) {
+        let (e, l, o) = (&self.elements, &mut self.layers, &mut self.output);
+        o.collect(e, self.root, l);
+        // Growing a shared fitted bitmap changes the ink of thumbnails already
+        // compiled from it. Reopen those recorded readers before issuing the
+        // one worker target, including uses in an otherwise unchanged shell.
+        // Newly emitted uses already participate. No layout inputs or hit
+        // programs change; this is bounded resource preparation, not a solve.
+        if o.fits
+            .reopen_readers(|k| l.invalidate_composition(k, e.depth(k), Outputs::Draw))
+        {
+            for k in o.fits.abandon() {
+                l.invalidate_composition(k, e.depth(k), Outputs::Draw);
+            }
+            o.reset_fits();
+            l.drain(e, Pass::Compose, o);
+            l.drain(e, Pass::Project, o);
+            o.collect(e, self.root, l);
+        }
     }
     /// Layout may advance with every reader pinned. Don't pack a side that
     /// cannot be sealed, and don't require a spare for an unchanged side.
     pub(crate) fn collect_if_available(&mut self) -> bool {
         let o = &mut self.output;
         let stamp = |side: usize| {
-            self.root
-                .map(|k| (k, self.layers.parts[k].ports[side].revision))
+            self.root.map(|k| {
+                (
+                    k,
+                    self.layers.parts[k].ports[side].revision,
+                    self.layers.edge_epoch,
+                )
+            })
         };
         let focus_root = self
             .root
             .filter(|&k| self.elements.slots[k].stats.tab_stops != 0);
-        if (stamp(0) != o.installed[0] && !o.draw.available())
+        if !o.local.maps.available()
+            || (stamp(0) != o.installed[0] && !o.draw.available())
             || (stamp(1) != o.installed[1] && !o.hits.available())
             || (focus_root.is_some()
                 && o.navigation
                     .as_ref()
                     .is_some_and(|b| !b.available(&self.layers)))
         {
-            o.cancel_fits();
+            o.reset_fits();
             return false;
         }
-        o.collect(&self.elements, self.root, &self.layers);
+        self.collect_output();
+        let o = &mut self.output;
         if !o.fits.waiting()
             && let Some((k, bank)) = focus_root.zip(o.navigation.as_mut())
         {
@@ -1369,11 +2051,13 @@ impl Tree {
     pub(crate) fn seal(&mut self) -> Option<Scene> {
         let o = &mut self.output;
         if o.fits.waiting()
+            || !o.local.maps.available()
             || (o.dirty[0] && !o.draw.available())
             || (o.dirty[1] && !o.hits.available())
         {
             return None;
         }
+        o.fits.bind(&mut o.draw.build);
         let navigation = if let Some(root) = self
             .root
             .filter(|&k| self.elements.slots[k].stats.tab_stops != 0)
@@ -1395,7 +2079,7 @@ impl Tree {
             _workspace: self.workspace.clone(),
             viewport: self.layers.viewport,
             drawing: o.draw.current().clone(),
-            hits: o.hits.current().clone(),
+            hits: o.hit_frame(),
         })
     }
 }
@@ -1407,16 +2091,22 @@ impl Raster {
     #[cfg(test)]
     pub(super) fn pack_counts(&self) -> (usize, usize, usize, usize) {
         let out = &self.tree.output;
+        let t = &out.local.maps.current;
         (
-            out.drawing().commands.len(),
-            out.drawing().ids.len(),
+            out.drawing().commands.len() + t.counts[0] - t.markers[0],
+            out.drawing().ids.len() + t.counts[1],
             out.fits.additions,
-            out.hits.current().items.len(),
+            out.hits.current().items.len() + t.counts[2] - t.markers[1],
         )
     }
     #[cfg(test)]
     pub(super) fn replay_drawing(&self) -> Vec<u8> {
-        rasterize(self.tree.layers.viewport, self.tree.output.drawing()).unwrap()
+        rasterize(
+            self.tree.layers.viewport,
+            self.tree.output.drawing(),
+            &self.tree.output.local.maps.current,
+        )
+        .unwrap()
     }
     #[cfg(test)]
     pub fn pixels(&self) -> &[u8] {
@@ -1435,6 +2125,13 @@ impl Raster {
         self.tree.refresh(w, h, scale)?;
         let o = &self.tree.output;
         Ok(self.viewport != self.tree.layers.viewport
+            || !o.local.maps.current.same_picture(
+                o.local
+                    .maps
+                    .installed()
+                    .map(AsRef::as_ref)
+                    .unwrap_or(&Tables::EMPTY),
+            )
             || (o.dirty[0] && **o.draw.current() != o.draw.build))
     }
     pub(crate) fn install(&mut self) {
@@ -1449,9 +2146,17 @@ impl Raster {
         if self.tree.waiting_for_pixels() {
             return Err("fitted image inputs are not ready".into());
         }
+        let o = &mut self.tree.output;
+        o.fits.bind(&mut o.draw.build);
         let v = self.tree.layers.viewport;
         let next = (changed || self.pixels.is_empty())
-            .then(|| rasterize(v, self.tree.output.drawing()))
+            .then(|| {
+                rasterize(
+                    v,
+                    self.tree.output.drawing(),
+                    &self.tree.output.local.maps.current,
+                )
+            })
             .transpose()?;
         Ok(Prepared { raster: self, next })
     }
@@ -1489,7 +2194,7 @@ impl Prepared<'_> {
         Ok(())
     }
 }
-fn rasterize(viewport: Rect, draw: &Drawing) -> Result<Vec<u8>, String> {
+fn rasterize(viewport: Rect, draw: &Drawing, tables: &Tables) -> Result<Vec<u8>, String> {
     let w = viewport.width.ceil() as usize;
     let h = viewport.height.ceil() as usize;
     let len = w
@@ -1511,16 +2216,21 @@ fn rasterize(viewport: Rect, draw: &Drawing) -> Result<Vec<u8>, String> {
         let props = SurfaceProps::new(SurfacePropsFlags::default(), PixelGeometry::RGBH);
         let mut surface = surfaces::wrap_pixels(&info, &mut pixels, w * 4, Some(&props))
             .ok_or("invalid raster surface")?;
-        replay(surface.canvas(), draw, |canvas, run, paint| {
-            canvas.draw_glyphs_at(
-                run.ids,
-                run.positions,
-                (run.origin[0], run.origin[1]),
-                &run.face.font(run.size),
-                paint,
-            );
-            Ok(())
-        })?;
+        replay_inner(
+            surface.canvas(),
+            draw,
+            recording::Replay::root(tables),
+            &mut |canvas, run, paint| {
+                canvas.draw_glyphs_at(
+                    run.ids,
+                    run.positions,
+                    (run.origin[0], run.origin[1]),
+                    &run.face.font(run.size),
+                    paint,
+                );
+                Ok(())
+            },
+        )?;
     }
     Ok(pixels)
 }
@@ -1532,10 +2242,11 @@ struct GlyphPaintRun<'a> {
     face: text::Face,
     size: f32,
 }
-fn replay(
+fn replay_inner(
     canvas: &skia_safe::Canvas,
     draw: &Drawing,
-    mut glyphs: impl FnMut(&skia_safe::Canvas, GlyphPaintRun, &Paint) -> Result<(), String>,
+    replay: recording::Replay<'_>,
+    glyphs: &mut impl FnMut(&skia_safe::Canvas, GlyphPaintRun, &Paint) -> Result<(), String>,
 ) -> Result<(), String> {
     let _scope = skia_safe::AutoCanvasRestore::guard(canvas, false);
     let mut i = 0;
@@ -1543,35 +2254,50 @@ fn replay(
         let (scope, cmd) = &draw.commands[i];
         i += 1;
         match cmd {
+            Command::Order {
+                call,
+                clip,
+                defer_clips,
+                ..
+            } => {
+                replay.enter(canvas, draw, *scope, *clip, *defer_clips, *call, glyphs)?;
+                continue;
+            }
             Command::Group { alpha, bounds, end } => {
-                if let Some(local) = opacity::visible(canvas, *bounds) {
-                    canvas.save_layer_alpha(local, u32::from(*alpha));
-                    #[cfg(test)]
-                    opacity::record(local);
-                } else {
+                let bounds = bounds.resolved(
+                    draw,
+                    replay.children.map_or_else(Default::default, |c| c.bounds),
+                );
+                let bounds = draw
+                    .planes
+                    .installed(scope.plane, replay.tables, 0)
+                    .map_or(bounds, |p| p.matrix.map_rect(bounds).0);
+                if !opacity::open(canvas, bounds, *alpha) {
                     i = end + 1;
                 }
                 continue;
             }
             Command::Restore => {
-                canvas.restore();
+                canvas.restore(); // layer
+                canvas.restore(); // establishing matrix
                 continue;
             }
             _ => (),
         }
-        let plane = draw.planes.get(scope.plane);
+        let plane = draw.planes.installed(scope.plane, replay.tables, 0);
         if let Some((material, rect)) = cmd.outer_shadow(&draw.materials) {
             // Ordinary host clips constrain the box, not its outer shadow.
             // Apply the same transform without installing those clips.
+            let _enclosures = replay.apply(canvas, true);
             let _shadow_pose = (scope.shadow != 0
                 || plane.is_some()
                 || scope.guard != Coords::default())
             .then(|| {
                 let restore = skia_safe::AutoCanvasRestore::guard(canvas, true);
                 if scope.guard != Coords::default() {
-                    scope.guard.clip(draw, canvas);
+                    scope.guard.clip(draw, canvas, replay.tables);
                 }
-                pose::ShadowGuard::apply(scope.shadow, draw, canvas);
+                pose::ShadowGuard::apply(scope.shadow, draw, canvas, replay.tables);
                 if let Some(p) = plane {
                     canvas.concat(&p.matrix);
                 }
@@ -1588,11 +2314,26 @@ fn replay(
                 continue;
             }
         }
+        let _enclosures = replay.apply(canvas, false);
+        let mut limit = replay.limit;
         let _posed = plane.map(|p| {
             let restore = skia_safe::AutoCanvasRestore::guard(canvas, true);
-            draw.planes.enter(p, canvas, &draw.clips, scope.before);
+            limit = draw
+                .planes
+                .enter(p, canvas, &draw.clips, scope.before, replay.tables, limit);
             restore
         });
+        let limit = limit.map(|v| match cmd {
+            Command::Image(sample) => sample.limit(v),
+            _ => v.body,
+        });
+        let _limit = limit
+            .filter(|_| !matches!(cmd, Command::Fill(..)))
+            .map(|r| {
+                let restore = skia_safe::AutoCanvasRestore::guard(canvas, true);
+                canvas.clip_rect(sk(r), None, false);
+                restore
+            });
         let stop = plane.map_or(OPEN, |p| p.stop);
         if let Command::Image(sample) = cmd {
             sample.draw(canvas, &draw.clips, scope.mask, plane, &draw.materials);
@@ -1610,18 +2351,43 @@ fn replay(
                     } => {
                         draw.materials.draw(canvas, *material, *rect, *clip, *phase);
                     }
-                    Command::Thumb(r, clip) => {
+                    Command::Order { .. } => unreachable!(),
+                    Command::Thumb(_, _) | Command::ScrollThumb(_, _, _, _) => {
+                        let (r, clip) = match cmd {
+                            Command::Thumb(r, clip) => (*r, *clip),
+                            Command::ScrollThumb(k, frame, clip, axis) => {
+                                let Some(bar) = scrollbars::Bar::new(
+                                    *frame,
+                                    *axis,
+                                    replay.tables.get(*k, 0).expect("sealed chrome").view,
+                                ) else {
+                                    return Ok(());
+                                };
+                                (bar.thumb, *clip)
+                            }
+                            _ => unreachable!(),
+                        };
                         let _restore = skia_safe::AutoCanvasRestore::guard(canvas, true);
-                        canvas.clip_rect(sk(*clip), None, false);
+                        canvas.clip_rect(sk(clip), None, false);
                         let radius = r.width.min(r.height) * 0.5;
                         canvas.draw_round_rect(
-                            sk(*r),
+                            sk(r),
                             radius,
                             radius,
                             &draw.materials.paint(Brush::Solid(0xD0D5DC99)),
                         );
                     }
                     Command::Fill(r, brush) => {
+                        let Some(r) = limit.map_or(Some(*r), |mut clip| {
+                            let m = canvas.local_to_device_as_3x3();
+                            if m.is_translate() {
+                                let (tx, ty) = (m.translate_x(), m.translate_y());
+                                clip = clip.shifted(tx, ty).paint_clip(false).shifted(-tx, -ty);
+                            }
+                            r.intersection(clip)
+                        }) else {
+                            return Ok(());
+                        };
                         let paint = draw.materials.paint(*brush);
                         canvas.draw_rect(
                             skia_safe::Rect::from_xywh(r.x, r.y, r.width, r.height),
@@ -1646,17 +2412,27 @@ fn replay(
                                 false,
                             );
                         }
-                        let result = glyphs(
-                            canvas,
-                            GlyphPaintRun {
-                                ids: &draw.ids[range.clone()],
-                                positions: &draw.positions[range.clone()],
-                                origin: *pos,
-                                face: *face,
-                                size: *size,
-                            },
-                            &paint,
-                        );
+                        let result = (|| {
+                            let mut r = range.clone();
+                            while !r.is_empty() {
+                                let ids = draw.ids.chunk(r.clone());
+                                let positions = draw.positions.chunk(r.clone());
+                                let n = ids.len().min(positions.len());
+                                glyphs(
+                                    canvas,
+                                    GlyphPaintRun {
+                                        ids: &ids[..n],
+                                        positions: &positions[..n],
+                                        origin: *pos,
+                                        face: *face,
+                                        size: *size,
+                                    },
+                                    &paint,
+                                )?;
+                                r.start += n;
+                            }
+                            Ok::<(), String>(())
+                        })();
                         if clip.is_some() {
                             canvas.restore();
                         }

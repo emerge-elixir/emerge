@@ -2,6 +2,7 @@ use super::nearby::mounted;
 use super::*;
 use std::time::{Duration, Instant};
 mod navigation;
+pub(super) mod recordings;
 mod scopes;
 pub(super) mod visibility;
 

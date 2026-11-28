@@ -176,7 +176,7 @@ impl Groups {
             self.paths[i].start = draw.begin_group(self.paths[i].alpha);
         }
     }
-    pub fn switch(&mut self, draw: &mut Drawing, vp: Rect, to: u32) {
+    pub fn switch(&mut self, draw: &mut Drawing, to: u32) {
         let mut common = to;
         while self.depth(common) > self.depth(self.active) {
             common = self.paths[common as usize - 1].parent;
@@ -186,7 +186,7 @@ impl Groups {
                 common = self.paths[common as usize - 1].parent;
             }
             let p = &self.paths[self.active as usize - 1];
-            draw.end_group(p.start, vp);
+            draw.end_group(p.start);
             self.active = p.parent;
         }
         self.open(draw, common, to);

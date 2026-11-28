@@ -107,16 +107,31 @@ fn long_scroll_window(c: &Counter) {
     let mut writer = Publisher::new(0);
     let mut live = Tree::for_session(0);
     writer.apply(&bytes, 1.).unwrap().install(&mut live);
-    for (i, pos) in [0., 1., 0.5, 0.].into_iter().enumerate() {
+    let range = (n - 4) as f64 * 20.;
+    for (i, (pos, records)) in [
+        (0., 4),
+        (1. / range, 1),
+        (2. / range, 0),
+        (1., 4),
+        (0.5, 4),
+        (0., 0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
         c.zero(
-            "reserved first window and far seek on both admission paths",
+            "reserved first demand, warm translation, far seek and revisit on both admission paths",
             || {
                 for t in [&mut r.tree, &mut live] {
                     if i != 0 {
                         assert!(scrolling::set_input(t, 1, [0., pos], i as u64, None));
                     }
                     t.refresh(100., 80., 1.).unwrap();
-                    assert_eq!(t.output.packed_children, [4; 2]);
+                    assert_eq!(t.output.packed_children, [0; 2]);
+                    assert_eq!(t.output.recorded(), [records; 2]);
+                    if records == 0 {
+                        assert_eq!(t.output.assembly().1, [0; 3]);
+                    }
                     let s = t.seal().unwrap();
                     assert_eq!(
                         s.hits.target_at(s.viewport, 5., 5.).unwrap().1,
@@ -158,6 +173,43 @@ fn long_scroll_window(c: &Counter) {
     (c.fail_next_reserve)();
     assert!(r.tree.patch(&grow).is_err());
     assert_eq!(r.tree.encode(), before);
+}
+// Admission may provision a workspace. First exposure, publishing all its
+// readers, refusing a sixth (second for raster), and retrying may not grow it.
+fn pinned_scroll_bindings(c: &Counter) {
+    let bytes = scrolling::visibility::list(32, false, false, true);
+    let mut live = Tree::for_session(0);
+    Publisher::new(0)
+        .apply(&bytes, 1.)
+        .unwrap()
+        .install(&mut live);
+    let mut detached = Tree::default();
+    detached.upload(&bytes).unwrap();
+    for (t, readers) in [(&mut detached, 1), (&mut live, 5)] {
+        c.zero(
+            "pin every reserved scroll generation, refuse, release and retry",
+            || {
+                let mut pins: [Option<paint::Scene>; 5] = Default::default();
+                for (i, slot) in pins[..readers].iter_mut().enumerate() {
+                    if i != 0 {
+                        scrolling::recordings::move_to(t, 1, i as f64, i as u64);
+                    }
+                    t.refresh(100., 80., 1.).unwrap();
+                    *slot = Some(t.seal().unwrap());
+                }
+                scrolling::recordings::move_to(t, 1, 280., readers as u64);
+                t.layout(100., 80., 1.).unwrap();
+                assert!(!t.collect_if_available());
+                assert!(t.seal().is_none());
+                let start = pins[0].as_ref().unwrap();
+                assert_eq!(start.hits.target_at(start.viewport, 5., 5.).unwrap().1, 10);
+                pins[readers - 1] = None;
+                assert!(t.collect_if_available());
+                let ready = t.seal().unwrap();
+                assert_eq!(ready.hits.target_at(ready.viewport, 5., 5.).unwrap().1, 24);
+            },
+        );
+    }
 }
 fn reserved_focus_order(c: &Counter) {
     let ids = (2..514).collect::<Vec<_>>();
@@ -1131,6 +1183,50 @@ fn el_child_offers(c: &Counter) {
     }
 }
 
+fn shared_fit_growth(c: &Counter) {
+    let bytes = scrolling::visibility::shared_photo();
+    for live in [false, true] {
+        let mut t = if live {
+            Tree::for_session(0)
+        } else {
+            Tree::with_headroom(0)
+        };
+        if live {
+            Publisher::new(0).apply(&bytes, 1.).unwrap().install(&mut t);
+        } else {
+            t.upload(&bytes).unwrap();
+        }
+        let mut worker = images::image_loader(true, 0);
+        for _ in 0..4 {
+            images::load(&mut t, &mut worker);
+        }
+        let mut pinned = None;
+        for (i, y) in [0., 30., 31.].into_iter().enumerate() {
+            c.zero(
+                "discover a shared fit including previously recorded readers",
+                || {
+                    if i > 0 {
+                        scrolling::recordings::move_to(&mut t, 2, y, i as u64);
+                    }
+                    t.refresh(240., 50., 1.).unwrap();
+                },
+            );
+            if i < 2 {
+                images::load(&mut t, &mut worker);
+            }
+            c.zero("bind coalesced thumbnail and full-size uses", || {
+                t.refresh(240., 50., 1.).unwrap();
+            });
+            assert!(!t.waiting_for_pixels());
+            if i == 0 {
+                pinned = t.seal();
+                assert!(pinned.is_some());
+            }
+        }
+        drop(pinned);
+    }
+}
+
 fn bounded_content(c: &Counter) {
     for axis in [1, 2] {
         let mut r = Raster::default();
@@ -1536,6 +1632,7 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     empty_exporters(&c);
     scroll_projection(&c);
     long_scroll_window(&c);
+    pinned_scroll_bindings(&c);
     reserved_focus_order(&c);
     let mut split = Raster::default();
     split.tree.upload(&transforms::split_prose()).unwrap();
@@ -1574,6 +1671,7 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     }
     paragraphs(&c);
     documents(&c);
+    shared_fit_growth(&c);
     for name in [images::GRID, "test_assets/turn_right.jpeg"] {
         let mut image = Raster::default();
         image.tree.upload(&images::story(name, 0.5)).unwrap();

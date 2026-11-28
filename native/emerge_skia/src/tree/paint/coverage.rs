@@ -24,8 +24,17 @@ impl Coverage {
         })
     }
     pub(super) fn hides(&mut self, e: &Elements, l: &Layers, k: Key) -> bool {
+        self.hides_in(e, l, k, l.projection(k))
+    }
+    pub(super) fn hides_in(
+        &mut self,
+        e: &Elements,
+        l: &Layers,
+        k: Key,
+        projected: Option<&Projected>,
+    ) -> bool {
         let a = &e.attrs[k];
-        let p = l.parts[k].at(l.projection(k));
+        let p = l.parts[k].at(projected);
         if a.posed()
             || a.opacity.is_some()
             || e.slots[k].stats.mounts != 0
@@ -41,7 +50,7 @@ impl Coverage {
         }
         let fill = p.paint.fill;
         let possible = if p.paint.decorated {
-            l.painted(k).frame
+            projected.map_or(l.paint[k], |p| p.ctx).frame
         } else if let Some((r, _)) = fill {
             r
         } else {

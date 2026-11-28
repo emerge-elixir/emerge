@@ -26,18 +26,36 @@ pub(super) enum Phase {
     Inset,
     Border,
 }
-#[derive(Clone, Copy, PartialEq)]
-struct Material {
+#[derive(Clone, Copy, Default, PartialEq)]
+pub(super) struct Material {
     decor: Decor,
     background: Option<u32>,
     font: Bytes,
     svg: Bytes,
-    scale: f32,
+    pub(super) scale: f32,
+}
+impl Material {
+    pub(super) fn from_owner(e: &Elements, k: Key, mut copy: impl FnMut(Bytes) -> Bytes) -> Self {
+        let a = &e.attrs[k];
+        Self {
+            decor: Decor {
+                background_gradient: copy(a.decor.background_gradient),
+                border_gradient: copy(a.decor.border_gradient),
+                shadows: copy(a.decor.shadows),
+                ..a.decor
+            },
+            font: copy(a.font_gradient),
+            svg: copy(a.svg_gradient),
+            background: a.background,
+            scale: e.slots[k].admitted.scale,
+        }
+    }
 }
 #[derive(Default, PartialEq)]
 pub(super) struct Materials {
     styles: Vec<Material>,
     bytes: Vec<u8>,
+    pub(super) shared: Buffer<pages::Ref<recording::Swatch>>,
 }
 impl Materials {
     pub(super) fn capacities(&self) -> [usize; 2] {
@@ -55,10 +73,10 @@ impl Materials {
     pub fn clear(&mut self) {
         self.styles.clear();
         self.bytes.clear();
+        self.shared.clear();
     }
     fn add(&mut self, e: &Elements, k: Key) -> u32 {
-        let a = &e.attrs[k];
-        let mut copy = |span: Bytes| {
+        let m = Material::from_owner(e, k, |span: Bytes| {
             if span.len == 0 {
                 return Bytes::default();
             }
@@ -68,41 +86,36 @@ impl Materials {
                 start,
                 len: span.len,
             }
-        };
-        let decor = Decor {
-            background_gradient: copy(a.decor.background_gradient),
-            border_gradient: copy(a.decor.border_gradient),
-            shadows: copy(a.decor.shadows),
-            ..a.decor
-        };
-        let font = copy(a.font_gradient);
-        let svg = copy(a.svg_gradient);
-        let idx = self.styles.len() as u32;
-        self.styles.push(Material {
-            decor,
-            background: a.background,
-            font,
-            svg,
-            scale: e.slots[k].admitted.scale,
         });
+        let idx = self.styles.len() as u32;
+        self.styles.push(m);
         idx
+    }
+    fn parts(&self, i: u32) -> (Material, &[u8]) {
+        if self.shared.is_empty() {
+            (self.styles[i as usize], &self.bytes)
+        } else {
+            self.shared[i as usize].parts()
+        }
     }
     pub fn paint(&self, b: Brush) -> Paint {
         match b {
             Brush::Solid(c) => solid(c),
-            Brush::Svg(i, r) => ink(None, self.styles[i as usize].svg, &self.bytes, r),
+            Brush::Svg(i, r) => {
+                let (m, raw) = self.parts(i);
+                ink(None, m.svg, raw, r)
+            }
             Brush::Font(i, r) => {
-                let m = self.styles[i as usize];
-                ink(None, m.font, &self.bytes, r)
+                let (m, raw) = self.parts(i);
+                ink(None, m.font, raw, r)
             }
         }
     }
     pub fn shadow_pass(&self, i: u32, phase: Phase) -> bool {
-        matches!(phase, Phase::Under | Phase::OuterShadow)
-            && self.styles[i as usize].decor.shadows.len != 0
+        matches!(phase, Phase::Under | Phase::OuterShadow) && self.parts(i).0.decor.shadows.len != 0
     }
     pub fn paint_bounds(&self, i: u32, r: Rect, phase: Phase, clip: Rect) -> SkRect {
-        let m = self.styles[i as usize];
+        let (m, _) = self.parts(i);
         // Each of offset, spread and blur is <= max_shadow. Include both
         // offset and spread, three blur sigmas (sigma = blur / 2), and AA.
         if self.shadow_pass(i, phase) {
@@ -118,8 +131,7 @@ impl Materials {
         }
     }
     pub fn outer_shadow(&self, canvas: &Canvas, i: u32, r: Rect) {
-        let m = self.styles[i as usize];
-        let raw = &self.bytes;
+        let (m, raw) = self.parts(i);
         draw_shadows(
             canvas,
             m.decor.shadows.get(raw),
@@ -130,9 +142,8 @@ impl Materials {
         );
     }
     pub fn draw(&self, canvas: &Canvas, i: u32, r: Rect, clip: Rect, phase: Phase) {
-        let m = self.styles[i as usize];
+        let (m, raw) = self.parts(i);
         let d = m.decor;
-        let raw = &self.bytes;
         let corners = d.radius.map(|v| scale::pixels(v, m.scale));
         let outer = rounded(r, corners);
         let shadows = d.shadows.get(raw);
@@ -174,7 +185,9 @@ impl Materials {
 #[derive(Default)]
 pub(super) struct MaterialIndex {
     epoch: u64,
-    by_owner: SecondaryMap<Key, (u64, u32)>,
+    by_owner: SecondaryMap<Key, (u64, u32, Option<pages::Ref<recording::Swatch>>)>,
+    recording: bool,
+    pub(super) versions: recording::Swatches,
 }
 impl MaterialIndex {
     pub fn reserve(&mut self, n: usize) -> Result<(), String> {
@@ -182,16 +195,35 @@ impl MaterialIndex {
             .try_set_capacity(n)
             .map_err(pool::capacity_error)
     }
-    pub fn prepare(&mut self, k: Key) {
-        self.by_owner.entry(k).unwrap().or_default();
+    pub fn forget(&mut self, k: Key) {
+        self.by_owner.remove(k);
     }
-    pub fn begin(&mut self) {
+    pub fn prepare(&mut self, e: &Elements, k: Key) {
+        if !e.attrs[k].material() {
+            self.forget(k);
+            return;
+        }
+        let (_, _, s) = self.by_owner.entry(k).unwrap().or_default();
+        if s.as_ref().is_some_and(|s| !s.matches(e, k)) {
+            *s = None;
+        }
+    }
+    pub fn begin(&mut self, recording: bool) {
+        self.recording = recording;
         self.epoch += 1;
     }
     pub fn get(&mut self, draw: &mut Drawing, e: &Elements, k: Key) -> u32 {
-        let (stamp, index) = &mut self.by_owner[k];
+        let (stamp, index, saved) = &mut self.by_owner[k];
         if *stamp != self.epoch {
-            *index = draw.materials.add(e, k);
+            *index = if self.recording {
+                let i = draw.materials.shared.len();
+                draw.materials
+                    .shared
+                    .push(self.versions.resolve(saved, e, k));
+                i as u32
+            } else {
+                draw.materials.add(e, k)
+            };
             *stamp = self.epoch;
         }
         *index

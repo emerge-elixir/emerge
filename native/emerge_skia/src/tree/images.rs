@@ -177,7 +177,7 @@ impl Tree {
                                 e.touch(k);
                             }
                         }
-                        self.output.cancel_fits();
+                        self.output.cancel_fits(e);
                         true
                     }
                 };
@@ -189,12 +189,12 @@ impl Tree {
         if b.generation != generation || b.source == source {
             return false;
         }
-        self.output.cancel_fits();
         // Keep the actual bound image during a replacement. Never infer the
         // next file's dimensions from the last frame or a partially read file.
         let old = std::mem::replace(&mut b.source, source);
         e.slots[k].change.image.get_or_insert(old);
         e.touch(k);
+        self.output.cancel_fits(e);
         true
     }
 }

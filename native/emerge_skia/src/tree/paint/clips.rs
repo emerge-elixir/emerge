@@ -69,14 +69,14 @@ impl crate::tree::decoration::Decor {
 pub(super) type Mask = u32;
 pub(super) const OPEN: Mask = 0;
 #[derive(Default, PartialEq)]
-pub(super) struct Clips(Vec<(Rounded, Mask)>);
+pub(super) struct Clips(pub(super) Buffer<(Rounded, Mask)>);
 impl Clips {
     pub(super) fn capacity(&self) -> usize {
         self.0.capacity()
     }
     pub fn reserve(&mut self, n: usize, b: Budget) -> Result<(), String> {
         if n > self.0.capacity() {
-            pool::reserve(&mut self.0, b.capacity(n))?;
+            pool::reserve(self.0.edit(), b.capacity(n))?;
         }
         Ok(())
     }

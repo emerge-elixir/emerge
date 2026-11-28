@@ -1,5 +1,6 @@
 use super::*;
 mod content;
+pub(in crate::tree::tests) use content::shared_photo;
 
 fn reference(bytes: &[u8]) -> Raster {
     let mut r = Raster::default();
@@ -10,6 +11,15 @@ fn reference(bytes: &[u8]) -> Raster {
 fn twins(fast: &mut Raster, slow: &mut Raster, w: usize, h: usize) {
     let actual = fast.draw(w as f32, h as f32, 1.).unwrap();
     let expected = slow.draw(w as f32, h as f32, 1.).unwrap();
+    if let Some(i) = actual.iter().zip(expected).position(|(a, b)| a != b) {
+        eprintln!(
+            "difference at ({},{}) {:?} vs {:?}",
+            i / 4 % w,
+            i / 4 / w,
+            &actual[i / 4 * 4..i / 4 * 4 + 4],
+            &expected[i / 4 * 4..i / 4 * 4 + 4]
+        );
+    }
     assert_eq!(
         actual.iter().zip(expected).position(|(a, b)| a != b),
         None,
@@ -123,23 +133,20 @@ fn warm_scroll_projects_only_the_saved_run_for_both_streams() {
                 );
                 let work = r.tree.layers.scroll.counts;
                 assert_eq!((work.content_slots, work.range_reads), (0, 0));
-                assert_eq!(work.fact_roots, usize::from(!wrapped));
-                assert_eq!(work.compose_reads, [usize::from(wrapped); 2]);
+                assert_eq!(work.fact_roots, 0);
+                assert_eq!(work.compose_reads, [0; 2]);
                 let trace = &r.tree.layers.trace;
                 assert!(
                     trace
                         .iter()
                         .all(|(p, _, _)| matches!(p, PaintContext | Compose | Project))
                 );
-                assert_eq!(trace.iter().filter(|(p, _, _)| *p == Compose).count(), 1);
+                assert_eq!(trace.iter().filter(|(p, _, _)| *p == Compose).count(), 0);
                 assert_eq!(
                     trace.iter().filter(|(p, _, _)| *p == PaintContext).count(),
                     1
                 );
-                assert_eq!(
-                    trace.iter().filter(|(p, _, _)| *p == Project).count(),
-                    1 + count as usize + usize::from(wrapped)
-                );
+                assert_eq!(trace.iter().filter(|(p, _, _)| *p == Project).count(), 1);
                 assert_eq!(
                     (work.builds, work.refits, work.refreshes, work.rewrites),
                     (0, 0, 1, rewrite)
@@ -151,10 +158,8 @@ fn warm_scroll_projects_only_the_saved_run_for_both_streams() {
                             + 8,
                     "{work:?}"
                 );
-                assert_eq!(
-                    r.tree.output.packed_children,
-                    [count as usize + usize::from(wrapped); 2]
-                );
+                assert_eq!(r.tree.output.packed_children, [0; 2]);
+                assert_eq!(r.tree.output.recorded(), [[1, 0, 0, 4, 4, 0][i]; 2]);
                 assert_eq!(
                     r.pack_counts(),
                     (count as usize + 1, 0, 0, count as usize + 2)
@@ -393,6 +398,14 @@ fn first_scroll_window_reserves_before_acceptance_even_at_unchanged_key_count() 
     t.refresh(100., 80., 1.).unwrap();
     let installed = t.seal().unwrap();
     let accepted = t.encode();
+    // Enabling the first port now reserves the recording banks too. Two
+    // small pre-port workspaces needn't occupy a full account half. Model
+    // the remaining pinned credit, so *this reader's* release enables retry.
+    let occupied = storage.workspace.bytes().0;
+    let _overlap = storage
+        .workspace
+        .reserve(cap.saturating_sub(occupied) + 1)
+        .unwrap();
     assert_eq!(w.apply(&turns[2], 1.).err().as_deref(), Some(storage::BUSY));
     assert!(!storage.available());
     assert_eq!(t.encode(), accepted);

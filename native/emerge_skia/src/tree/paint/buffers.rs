@@ -130,10 +130,10 @@ impl Packed<8> for super::Drawing {
         [commands, ids, pos, clips, styles, bytes, planes, guards]: [usize; 8],
     ) -> Result<(), String> {
         pool::reserve(&mut self.shadow_guards, guards)?;
-        pool::reserve(&mut self.planes.0, planes)?;
-        pool::reserve(&mut self.commands, commands)?;
-        pool::reserve(&mut self.ids, ids)?;
-        pool::reserve(&mut self.positions, pos)?;
+        pool::reserve(self.planes.0.edit(), planes)?;
+        pool::reserve(self.commands.edit(), commands)?;
+        pool::reserve(self.ids.edit(), ids)?;
+        pool::reserve(self.positions.edit(), pos)?;
         self.clips.reserve(clips, Budget(0))?;
         self.materials.reserve(styles, bytes, Budget(0))
     }
@@ -154,8 +154,8 @@ impl Packed<4> for super::Hits {
         self.scrolls
             .try_reserve(scrolls.saturating_sub(self.scrolls.len()))
             .map_err(pool::capacity_error)?;
-        pool::reserve(&mut self.planes.0, planes)?;
-        pool::reserve(&mut self.items, items)?;
+        pool::reserve(self.planes.0.edit(), planes)?;
+        pool::reserve(self.items.edit(), items)?;
         self.clips.reserve(clips, Budget(0))
     }
     fn clear(&mut self) {

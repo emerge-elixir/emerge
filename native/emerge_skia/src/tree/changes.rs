@@ -11,6 +11,7 @@ pub(super) struct Change {
     pub membership: bool,
     pub old_parent: Option<(Option<Key>, Option<Slot>)>,
     pub image: Option<crate::raster_assets::Source>,
+    pub image_draft: bool,
     pub layout_before: Option<rotation::Dependencies>,
     pub attrs: Option<(Attrs, Span<u8>)>,
     pub order: Option<OrderSpan<Key>>,
@@ -123,9 +124,7 @@ impl Layers {
             self.invalidation_passes += 1;
         }
         while let Some(k) = e.touched.pop() {
-            if e.attrs[k].material() {
-                out.prepare_material(k);
-            }
+            out.prepare_material(e, k);
             let depth = e.depth(k);
             let m = &mut e.slots[k];
             debug_assert!(m.detached.is_none());
@@ -138,6 +137,9 @@ impl Layers {
                 .old_parent
                 .and_then(|(_, s)| s.zip(role))
                 .filter(|(a, b)| a != b);
+            if change.image_draft {
+                self.invalidate_composition(k, depth, Outputs::Draw);
+            }
             if let Some((old, next)) = slot_change {
                 // Front and behind share the same two-axis anchor.
                 if !matches!(
