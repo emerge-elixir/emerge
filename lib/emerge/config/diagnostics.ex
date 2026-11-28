@@ -47,6 +47,24 @@ defmodule Emerge.Config.Diagnostics do
   Native summaries reset the same window read by the stats API, so choose one
   approach when you need predictable measurement intervals.
 
+  On retained Wayland and binary headless outputs the `renderer_stats` message
+  includes idle windows (no redraw). It reports the selected API, frame count,
+  cadence when known, and wall-clock times with average, minimum, maximum and
+  sample count. An idle stage says `no samples`; a stage the backend cannot
+  measure says `unavailable`. Timings can overlap: for example, `render flush`
+  includes the GPU flush and submit calls. Don't add them to get a frame time.
+  `layout` times the retained update including paint preparation;
+  `refresh` times output collection. Edit timings cover accepted publications;
+  submit-to-handoff begins at native acceptance, not at the start of a BEAM render.
+  Wayland frame-callback timings require a matched handoff; neither callbacks
+  nor time in the graphics API measure physical scanout or device execution.
+
+  The report also includes sealed scene sizes, target reuse, and renderer-local
+  raster and SVG accounting. The legacy paint-layer cache, DRM and video metrics
+  are not available on these paths. Slow draw or present operations (at least
+  4 ms) can emit an info-level `renderer_slow_frame` message, at most once per
+  stage per second when stats logging is enabled.
+
   macOS supports printed summaries but not `EmergeSkia.stats/2`. Its summaries are
   cumulative; `stats: true` alone has no effect there.
 

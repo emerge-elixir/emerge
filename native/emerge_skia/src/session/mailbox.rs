@@ -69,7 +69,7 @@ impl Envelope {
                     .map(|_| atoms::ok())
                     .map_or_else(|why| (error(), why).encode(e), |ok| ok.encode(e)),
                 Command::Configure(c, observer) => s.configure(owner, c, e, observer).encode(e),
-                Command::Stats(cmd) => stats::snapshot(s, owner, cmd).encode(e),
+                Command::Stats(cmd) => stats::snapshot(owner, cmd).encode(e),
                 Command::Pin(_) => unreachable!(),
             };
             (control::emerge_skia_reply(), id, result)
@@ -107,6 +107,9 @@ impl Display {
                 .cadence(limit.unwrap_or(super::timing::HEADLESS_PERIOD));
         }
         drop(p);
+        if headless {
+            owner.stats.interval(limit);
+        }
         owner.actor.notify();
         owner.render.notify();
         Ok(())

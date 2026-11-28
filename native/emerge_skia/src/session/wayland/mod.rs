@@ -220,7 +220,13 @@ pub(super) fn run(
             .map_err(|_| "Wayland startup cancelled")?;
         while !owner.lifecycle.stop.load(Ordering::Acquire) {
             let wait = app.present(&conn, &qh)?;
-            events.dispatch(wait, &mut app).map_err(err)?;
+            let until_report = app
+                .display
+                .report_due(owner)
+                .map(|at| at.saturating_duration_since(Instant::now()));
+            events
+                .dispatch(wait.into_iter().chain(until_report).min(), &mut app)
+                .map_err(err)?;
         }
         Ok(())
     })
@@ -361,16 +367,18 @@ impl WindowApp {
             buffer.attach_to(surface).map_err(err)?;
             if !self.frame_pending {
                 surface.frame(qh, surface.clone());
+                self.display.callback = super::stats::Callback::arm(&bundle);
                 self.frame_pending = true;
             }
             self.window.commit();
             conn.flush().map_err(err)?;
+            let handed = Instant::now();
             #[cfg(feature = "stage-probes")]
             {
                 self.owner.probes.confirm(bundle.id, bundle.revision)?;
                 self.pin_target(&bundle, buffer);
             }
-            Some(started.elapsed())
+            Some(started..handed)
         };
         self.installed = Some(mapping);
         self.display
@@ -389,9 +397,10 @@ impl WindowApp {
             .info(o)
             .and_then(|o| o.modes.into_iter().find(|m| m.current))
         {
-            if let Some(stats) = &mut self.display.stats {
-                stats.output_mode(mode.refresh_rate);
-            }
+            self.owner.stats.interval(
+                (mode.refresh_rate > 0)
+                    .then(|| Duration::from_secs_f64(1000. / f64::from(mode.refresh_rate))),
+            );
             if mode.refresh_rate > 0
                 && let Ok(mut p) = self.owner.pipe.lock()
             {
@@ -409,6 +418,8 @@ impl WindowApp {
         }
     }
     fn resized(&mut self) {
+        // Don't assign feedback spanning a configure to either mapping.
+        self.display.callback = None;
         if let Ok((width, height)) = self.geometry.buffer() {
             self.input(InputEvent::Resized {
                 width,
@@ -468,8 +479,10 @@ impl CompositorHandler for WindowApp {
                 self.callback_armed = false;
             }
             self.frame_pending = false;
+            let now = Instant::now();
+            super::stats::Callback::received(&mut self.display.callback, now, &self.owner.stats);
             if let Ok(mut p) = self.owner.pipe.lock() {
-                p.clock.feedback(Instant::now());
+                p.clock.feedback(now);
                 self.owner.actor.notify();
             }
         }

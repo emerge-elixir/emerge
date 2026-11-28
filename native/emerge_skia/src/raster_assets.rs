@@ -21,11 +21,13 @@ mod format;
 mod input;
 mod sized;
 mod svg;
+mod usage;
 pub(crate) use files::{valid_absolute, valid_logical};
 use input::AssetKey;
 pub(crate) use input::{Digest, Input, InputBudget, Media, digest};
 pub(crate) use sized::{Record, covers};
 pub(crate) use svg::Pictures;
+pub(crate) use usage::Usage;
 #[cfg(test)]
 mod tests;
 use format::Format;
@@ -143,6 +145,8 @@ pub(crate) struct Loader {
     #[cfg(test)]
     decodes: Vec<(ISize, ISize)>,
     cached_bytes: usize,
+    // Only maintained for opted-in periodic reports; never retains an asset.
+    usage: Option<usage::CacheGauge>,
     resident: Arc<AtomicUsize>,
 }
 impl Loader {
@@ -158,6 +162,7 @@ impl Loader {
             #[cfg(test)]
             decodes: Default::default(),
             cached_bytes: 0,
+            usage: None,
             resident: Default::default(),
         })
     }
@@ -177,6 +182,7 @@ impl Loader {
     fn remove(&mut self, i: usize) -> Option<Entry> {
         let entry = self.cache.remove(i)?;
         self.cached_bytes -= entry.bitmap.0.charge.bytes;
+        self.note_cache_size();
         Some(entry)
     }
     fn charge(&mut self, bytes: usize) -> Option<Charge> {
@@ -315,6 +321,7 @@ impl Loader {
             record,
             bitmap: image.clone(),
         });
+        self.note_cache_size();
     }
 }
 

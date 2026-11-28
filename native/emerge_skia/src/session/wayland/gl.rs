@@ -107,16 +107,23 @@ impl Renderer for Offscreen {
         .map(|s| (s, ()))
         .ok_or_else(|| "cannot allocate 4x GL render target".into())
     }
-    fn finish(&mut self, s: &mut Surface, _: &()) -> Result<textures::Image, String> {
+    fn finish(
+        &mut self,
+        s: &mut Surface,
+        _: &(),
+        times: &mut crate::session::stats::DrawTimes,
+    ) -> Result<textures::Image, String> {
         let mut t = gpu::surfaces::get_backend_texture(
             s,
             skia_safe::surface::BackendHandleAccess::FlushRead,
         )
         .ok_or("unshareable GL render target")?;
-        self.context
-            .flush_and_submit_surface(s, gpu::SyncCpu::Yes)
-            .map_err(driver_error)?;
-        if self.context.abandoned() {
+        // Same two calls and order as flush_and_submit_surface, including
+        // submission on a flush error. Time the host calls, not GPU execution.
+        let flushed = times.time(|p| &mut p.gpu_flush, || self.context.flush_surface(s));
+        let submitted = times.time(|p| &mut p.submit, || self.context.submit(gpu::SyncCpu::Yes));
+        flushed.map_err(driver_error)?;
+        if !submitted || self.context.abandoned() {
             return Err("GL drawing context lost".into());
         }
         gpu::backend_textures::gl_texture_parameters_modified(&mut t);

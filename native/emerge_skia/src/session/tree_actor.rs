@@ -39,6 +39,9 @@ pub(super) struct Bundle {
     pub id: Id,
     pub revision: u64,
     pub started: Instant,
+    // Stats-only provenance of this sealed scene, never consulted by the selector.
+    pub accepted: Option<Instant>,
+    pub queued: Option<Instant>,
     pub sample: Option<timing::Tick>,
     pub endpoints: crate::tree::Endpoints,
     pub route: Arc<admission::Route>,
@@ -221,16 +224,24 @@ fn run_tree(owner: &Owner, wake: &Wake) -> Result<(), String> {
     let mut sample = None;
     let mut deadline = None;
     let mut needs_pack = false;
+    let mut accepted = None;
     let mut scroll = Default::default();
     while !owner.lifecycle.stop.load(Ordering::Acquire) {
         owner.actor.wait(deadline.take());
         if owner.lifecycle.stop.load(Ordering::Acquire) {
             break;
         }
+        let turn = owner.stats.now();
         let before = c.revision;
         for edit in owner.admission.prefix() {
             env.run(|env| owner.admission.credit(env, owner.lifecycle.id));
-            edit.declaration.install(&mut c.tree);
+            if let Some(at) = edit.at {
+                owner.stats.edit(at, edit.times);
+                accepted.get_or_insert(at);
+            }
+            owner.stats.measure(stats::Metric::Patch, || {
+                edit.declaration.install(&mut c.tree)
+            });
             c.route = edit.route;
             c.revision = edit.revision;
             c.request = true;
@@ -241,7 +252,8 @@ fn run_tree(owner: &Owner, wake: &Wake) -> Result<(), String> {
         // A controller echo can only be accepted after dispatch posted the
         // corresponding input. Take the inbox after the accepted prefix.
         c.request |= owner.scroll.collect(&mut c.tree, &mut scroll);
-        if let Ok(loader) = owner.loader.1.try_recv() {
+        if let Ok(mut loader) = owner.loader.1.try_recv() {
+            owner.stats.assets(&mut loader);
             c.assets = Some(images::Assets::new(loader));
             c.request |= c.tree.needs_images();
         }
@@ -276,17 +288,21 @@ fn run_tree(owner: &Owner, wake: &Wake) -> Result<(), String> {
             owner
                 .probes
                 .pause(probes::Stage::Layout, serial + 1, c.revision, owner);
-            if let Err(e) = c
-                .tree
-                .layout(view.size.0 as f32, view.size.1 as f32, view.scale)
-            {
+            if let Err(e) = owner.stats.measure(stats::Metric::Layout, || {
+                c.tree
+                    .layout(view.size.0 as f32, view.size.1 as f32, view.scale)
+            }) {
                 needs_pack = false;
                 owner.frame_error(&mut env, wake, e);
                 continue;
             }
             needs_pack = true;
         }
-        if !needs_pack || !c.tree.collect_if_available() {
+        if !needs_pack
+            || !owner
+                .stats
+                .measure(stats::Metric::Refresh, || c.tree.collect_if_available())
+        {
             continue;
         }
         if c.tree.waiting_for_pixels() {
@@ -305,7 +321,13 @@ fn run_tree(owner: &Owner, wake: &Wake) -> Result<(), String> {
         serial += 1;
         let id = Id { generation, serial };
         let sample = sample.filter(|s| s.output_generation == generation);
+        let queued = owner.stats.now();
+        if let Some((start, end)) = turn.zip(queued) {
+            owner.stats.constructed(&c.tree, &scene, start, end);
+        }
         let bundle = Bundle {
+            accepted: accepted.take(),
+            queued,
             id,
             scene,
             revision: c.revision,
@@ -321,6 +343,9 @@ fn run_tree(owner: &Owner, wake: &Wake) -> Result<(), String> {
             value: bundle,
         };
         let retired = lock(&owner.pipe)?.commands.offer(frame);
+        if retired.as_ref().is_some_and(|old| old.id != id) {
+            owner.stats.overwrite();
+        }
         drop(retired);
         #[cfg(feature = "stage-probes")]
         owner
@@ -380,14 +405,17 @@ fn run_cpu(owner: &Owner, wake: &Wake, mut cpu: Cpu) -> Result<(), String> {
             owner.render.wait(deadline);
             continue;
         };
+        let mut times = owner.stats.draw_times();
         let installed = lock(&owner.front)?.clone();
         let same = installed.as_ref().filter(|i| {
             i.bundle.view.generation == frame.id.generation
                 && i.bundle.scene.same_drawing(&frame.value.scene)
         });
-        let rgba = match same.and_then(|i| i.pixels.cpu()).cloned() {
+        let reused = same.and_then(|i| i.pixels.cpu()).cloned();
+        let reuse = reused.is_some();
+        let rgba = match reused {
             Some(p) => p,
-            None => match frame.value.scene.rasterize() {
+            None => match times.time(|t| &mut t.draw, || frame.value.scene.rasterize()) {
                 Ok(v) => Arc::new(v),
                 Err(e) => {
                     owner.frame_error(&mut env, wake, e);
@@ -405,6 +433,7 @@ fn run_cpu(owner: &Owner, wake: &Wake, mut cpu: Cpu) -> Result<(), String> {
             owner,
         );
         let target = cpu.finish(frame.value.view.size, rgba)?;
+        owner.drawn(&frame.value, times, reuse);
         let image = frame.map(|bundle| Completed { bundle, target });
         owner.completed(image)?;
         wake.notify();

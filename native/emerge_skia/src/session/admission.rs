@@ -64,11 +64,14 @@ impl Drop for Route {
     }
 }
 pub(super) struct Accepted {
+    pub at: Option<Instant>,
+    pub times: stats::EditTimes,
     pub declaration: Publication,
     pub revision: u64,
     pub route: Arc<Route>,
 }
 struct Data {
+    times: stats::EditTimes,
     stream: Option<Stream>,
     draft: Option<Draft>,
     route: Option<Arc<Route>>,
@@ -243,12 +246,20 @@ impl Admission {
                         .stream
                         .take()
                         .ok_or("edit stream already finished")?;
+                    let began = owner.stats.now();
                     match stream
                         .finish()
                         .and_then(|rows| writer.prepare(rows, job.scale))
                     {
                         Ok(d) => {
-                            lock(&job.data)?.draft = Some(d);
+                            let prepared = began.map(|t| t.elapsed());
+                            {
+                                let mut data = lock(&job.data)?;
+                                if let Some(elapsed) = prepared {
+                                    data.times.prepare = elapsed;
+                                }
+                                data.draft = Some(d);
+                            }
                             let r = if job.routes {
                                 Arc::new(Route {
                                     epoch: job.revision,
@@ -490,6 +501,7 @@ fn renderer_begin_nif(
         waiter,
         scale: f32::from_bits(a.scale.load(Ordering::Acquire)),
         data: Mutex::new(Data {
+            times: Default::default(),
             stream: Some(stream),
             draft: None,
             route: None,
@@ -523,15 +535,18 @@ fn renderer_chunk_nif(
     if part.len() > CHUNK {
         return Err(rustler::Error::BadArg);
     }
-    t.job
-        .data
-        .try_lock()
-        .map_err(|_| rustler::Error::BadArg)?
+    let mut guard = t.job.data.try_lock().map_err(|_| rustler::Error::BadArg)?;
+    let began = t.owner.stats.now();
+    guard
         .stream
         .as_mut()
         .ok_or(rustler::Error::BadArg)?
         .push(offset, part.as_slice())
         .map_err(reason)?;
+    if let Some(t) = began {
+        *guard.times.decode.get_or_insert(Duration::ZERO) += t.elapsed();
+    }
+    drop(guard);
     t.job.activity.fetch_add(1, Ordering::Release);
     #[cfg(feature = "stage-probes")]
     if t.hold(env, probes::Stage::Feed) {
@@ -552,8 +567,14 @@ fn renderer_apply_nif(env: Env, t: ResourceArc<Ticket>) -> NifResult<Atom> {
     let a = &t.owner.admission;
     let j = &t.job;
     let mut guard = j.data.try_lock().map_err(|_| rustler::Error::BadArg)?;
-    let d = guard.draft.as_mut().ok_or(rustler::Error::BadArg)?;
-    if !d.apply_slice() {
+    let began = t.owner.stats.now();
+    let Data { times, draft, .. } = &mut *guard;
+    let d = draft.as_mut().ok_or(rustler::Error::BadArg)?;
+    let done = d.apply_slice();
+    if let Some(t) = began {
+        times.apply += t.elapsed();
+    }
+    if !done {
         j.activity.fetch_add(1, Ordering::Release);
         #[cfg(feature = "stage-probes")]
         if t.hold(env, probes::Stage::Sliced) {
@@ -574,6 +595,8 @@ fn renderer_apply_nif(env: Env, t: ResourceArc<Ticket>) -> NifResult<Atom> {
     }
     let declaration = d.publish();
     let entry = Accepted {
+        at: t.owner.stats.now(),
+        times: *times,
         declaration,
         revision: j.revision,
         route: guard.route.as_ref().expect("provisioned route").clone(),

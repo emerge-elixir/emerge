@@ -1269,6 +1269,13 @@ pub(crate) struct Scene {
     pub hits: Arc<Hits>,
 }
 impl Scene {
+    pub(crate) fn packed_counts(&self) -> [usize; 3] {
+        [
+            self.drawing.commands.len(),
+            self.drawing.ids.len(),
+            self.hits.items.len(),
+        ]
+    }
     pub fn rasterize(&self) -> Result<Vec<u8>, String> {
         rasterize(self.viewport, &self.drawing)
     }

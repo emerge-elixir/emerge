@@ -2,7 +2,7 @@
 //! A completed lease keeps a slot immutable until the last reader finishes.
 use super::*;
 use crate::{
-    session::{Bundle, Pixels, Signal},
+    session::{Bundle, Pixels, Signal, stats::DrawTimes},
     tree::GeometryPainter,
 };
 use crossbeam_channel::{Sender, bounded};
@@ -32,7 +32,12 @@ pub(super) trait Renderer {
     type Storage;
     fn allocate(&mut self, size: (u32, u32)) -> Result<(Surface, Self::Storage), String>;
     /// Resolve and prove completion before exposing a readable handle.
-    fn finish(&mut self, surface: &mut Surface, storage: &Self::Storage) -> Result<Image, String>;
+    fn finish(
+        &mut self,
+        surface: &mut Surface,
+        storage: &Self::Storage,
+        times: &mut DrawTimes,
+    ) -> Result<Image, String>;
 }
 struct Slot<S> {
     size: (u32, u32),
@@ -62,6 +67,7 @@ impl<S> Bank<S> {
         i: usize,
         bundle: &Bundle,
         owner: &Owner,
+        times: &mut DrawTimes,
     ) -> Result<Arc<Lease>, String> {
         let size = bundle.view.size;
         if self.0[i].as_ref().is_none_or(|s| s.size != size) {
@@ -75,8 +81,13 @@ impl<S> Bank<S> {
         }
         let slot = self.0[i].as_mut().unwrap();
         let s = &mut slot.surface;
-        s.canvas().clear(Color::TRANSPARENT);
-        painter.record(s.canvas(), &bundle.scene.drawing)?;
+        times.time(
+            |t| &mut t.draw,
+            || {
+                s.canvas().clear(Color::TRANSPARENT);
+                painter.record(s.canvas(), &bundle.scene.drawing)
+            },
+        )?;
         #[cfg(feature = "stage-probes")]
         owner.probes.pause(
             crate::session::probes::Stage::Drawing,
@@ -84,7 +95,9 @@ impl<S> Bank<S> {
             bundle.revision,
             owner,
         );
-        let image = device.finish(s, &slot.storage)?;
+        let began = times.mark();
+        let image = device.finish(s, &slot.storage, times)?;
+        times.flush = began.map(|t| t.elapsed());
         Ok(Arc::new(Lease {
             image,
             size,
@@ -144,6 +157,7 @@ impl Producer {
                                 owner.render.wait(t);
                                 continue;
                             };
+                            let mut times = owner.stats.draw_times();
                             let installed = lock(&owner.front)?.clone();
                             let reuse = installed.and_then(|i| match i.pixels {
                                 Pixels::Gpu(target)
@@ -154,12 +168,19 @@ impl Producer {
                                 }
                                 _ => None,
                             });
+                            let reused = reuse.is_some();
                             let image = match reuse {
                                 Some(t) => t,
-                                None => {
-                                    slots.draw(&mut device, &mut painter, i, &f.value, &owner)?
-                                }
+                                None => slots.draw(
+                                    &mut device,
+                                    &mut painter,
+                                    i,
+                                    &f.value,
+                                    &owner,
+                                    &mut times,
+                                )?,
                             };
+                            owner.drawn(&f.value, times, reused);
                             let completed = f.map(|bundle| Completed {
                                 bundle,
                                 target: Target::Gpu(image),

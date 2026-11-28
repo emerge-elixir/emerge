@@ -826,8 +826,12 @@ defmodule EmergeSkia do
   is not supported for renderer handles.
 
   `:take` and `:reset` may return a draining error while asynchronous GPU samples
-  finish; retry the same command to complete the closed window. The stats schema
-  version is `25`. The macOS host returns `{:error, :not_supported}` for this API;
+  finish on backends with GPU timer queries; retry the same command to complete
+  the closed window. Retained Wayland and binary headless measure host calls,
+  not GPU execution. Their `renderer_stats` logs also describe edit preparation,
+  retained scene sizes and asset memory without changing the v25 snapshot shape.
+  A timing field with `count: 0` has no samples; its duration fields are not
+  measurements. The stats schema version is `25`. The macOS host returns `{:error, :not_supported}` for this API;
   use `diagnostics: [logs: [:stats]]` for its periodic summaries instead.
   """
   @spec stats(renderer(), Native.stats_command()) ::

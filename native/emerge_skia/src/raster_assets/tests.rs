@@ -86,6 +86,34 @@ fn directory_capability_file_and_decode_limits_precede_pixel_allocation() {
 }
 
 #[test]
+fn log_gauges_distinguish_resident_from_cached_without_keeping_images_alive() {
+    let mut l = Loader::new(Settings {
+        sources: vec![fixtures().display().to_string()],
+        cache_max_entries: 1,
+        cache_max_bytes: MIB,
+        svg_tree_max_entries: 1,
+        svg_tree_max_bytes: MIB,
+        ..Settings::default()
+    })
+    .unwrap();
+    let grid = l.load("alpha_grid.png".into());
+    let gauges = l.usage();
+    let art = l.load("single_axis_square.svg".into());
+    assert!(matches!(art, Source::Picture(_)));
+    let active = gauges.to_string();
+    assert!(active.contains("raster cache: entries=1 bytes=240"));
+    assert!(active.contains("SVG pictures: cached_entries=1"));
+    assert!(l.evict());
+    let pinned = gauges.to_string();
+    assert!(pinned.contains("raster cache: entries=0 bytes=0"));
+    assert!(pinned.contains("live charged raster bytes=240"));
+    drop((grid, art, l));
+    let released = gauges.to_string();
+    assert!(released.contains("live charged raster bytes=0"));
+    assert!(released.contains("SVG pictures: catalog unavailable"));
+}
+
+#[test]
 fn runtime_cache_hits_require_the_declared_decoder_and_current_file_capability() {
     let dir = Temp::new("content-reader");
     for (asset, ext, dimensions) in [

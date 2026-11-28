@@ -36,7 +36,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-rustler::atoms! {emerge_skia_config,emerge_skia_log,emerge_skia_route_changes,emerge_skia_retire_routes,emerge_skia_routed,error}
+rustler::atoms! {emerge_skia_config,emerge_skia_log,emerge_skia_route_changes,emerge_skia_retire_routes,emerge_skia_routed,error,info}
 
 #[derive(rustler::NifMap)]
 struct Output {
@@ -102,7 +102,9 @@ struct Display {
     input: Dispatcher,
     #[cfg(all(target_os = "linux", feature = "wayland"))]
     line_pixels: f32,
-    stats: Option<stats::Samples>,
+    next_report: Option<Instant>,
+    #[cfg(all(target_os = "linux", feature = "wayland"))]
+    callback: Option<stats::Callback>,
 }
 impl Display {
     fn title(&self, _title: String) -> Result<(), String> {
@@ -118,7 +120,7 @@ impl Display {
         owner: &Owner,
         bundle: Bundle,
         pixels: Pixels,
-        elapsed: Option<Duration>,
+        handoff: Option<std::ops::Range<Instant>>,
     ) -> Result<(), String> {
         debug_assert!(self.installed.as_ref().is_none_or(
             |i| i.bundle.revision <= bundle.revision && i.bundle.id.serial < bundle.id.serial
@@ -128,8 +130,10 @@ impl Display {
             owner.lifecycle.id,
         );
         self.input.after_draw(owner, &bundle.scene);
-        if let (Some(stats), Some(t)) = (&mut self.stats, elapsed) {
-            stats.submitted(t);
+        if let Some(span) = handoff {
+            owner.handed_off(&bundle, &span);
+            #[cfg(all(target_os = "linux", feature = "wayland"))]
+            stats::Callback::handed(&mut self.callback, bundle.id, span.end, &owner.stats);
         }
         let id = bundle.id;
         let revision = bundle.revision;
@@ -143,12 +147,14 @@ impl Display {
         owner.submitted(id, revision, now, cost)
     }
     fn dispatch(&mut self, owner: &Owner, env: Env, event: input::InputEvent) {
-        self.input.dispatch(
-            owner,
-            env,
-            self.installed.as_ref().map(|i| &i.bundle),
-            event,
-        );
+        owner.stats.measure(stats::Metric::Event, || {
+            self.input.dispatch(
+                owner,
+                env,
+                self.installed.as_ref().map(|i| &i.bundle),
+                event,
+            )
+        });
     }
 }
 struct BinarySink {
@@ -178,7 +184,9 @@ struct Owner {
         Receiver<mailbox::Envelope>,
     ),
     revision: AtomicU64,
+    backend: &'static str,
     api: String,
+    stats: stats::Collector,
     selected: std::sync::OnceLock<Selected>,
     #[cfg(all(
         target_os = "linux",
@@ -312,8 +320,16 @@ fn run_binary(
 ) -> Result<(), String> {
     let mut env = OwnedEnv::new();
     let mut claim = None;
+    let wait = |deadline| match deadline {
+        Some(at) => !matches!(
+            rx.recv_deadline(at),
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected)
+        ),
+        None => rx.recv().is_ok(),
+    };
     while !owner.lifecycle.stop.load(Ordering::Acquire) {
         display.controls(owner, &mut env);
+        let deadline = display.report_due(owner);
         {
             let mut p = lock(&owner.pipe)?;
             p.submit_open = owner.opportunity(claim.is_none());
@@ -331,7 +347,7 @@ fn run_binary(
         owner.render.notify();
         #[cfg(feature = "stage-probes")]
         if !owner.probes.open(probes::Stage::Claimed) {
-            if rx.recv().is_err() {
+            if !wait(deadline) {
                 break;
             }
             continue;
@@ -357,8 +373,13 @@ fn run_binary(
                 sink.channels.message(e, &sink.message, w, h, data)
             })
             .map_err(|_| "headless output target is gone")?;
-            display.install(owner, bundle, Pixels::Cpu(rgba), Some(started.elapsed()))?;
-        } else if rx.recv().is_err() {
+            display.install(
+                owner,
+                bundle,
+                Pixels::Cpu(rgba),
+                Some(started..Instant::now()),
+            )?;
+        } else if !wait(deadline) {
             break;
         }
     }
@@ -391,6 +412,8 @@ fn start(caller: LocalPid, opts: Start) -> Result<ResourceArc<Session>, String> 
         Driver::Wayland { conn, .. } => Some(wayland::startup_socket(conn)?),
         _ => None,
     };
+    let headless = matches!(driver, Driver::Binary(_));
+    let limit = interval(opts.target_fps)?;
     let owner = Arc::new(Owner {
         #[cfg(feature = "stage-probes")]
         probes: Default::default(),
@@ -400,11 +423,17 @@ fn start(caller: LocalPid, opts: Start) -> Result<ResourceArc<Session>, String> 
         loader: bounded(1),
         configured_assets: Default::default(),
         capturing: Default::default(),
-        pipe: Mutex::new(Pipeline::new(interval(opts.target_fps)?)),
+        pipe: Mutex::new(Pipeline::new(limit)),
         actor: Signal::default(),
         render: Signal::default(),
         revision: AtomicU64::new(0),
+        backend: if headless { "headless" } else { "wayland" },
         api: opts.rendering_api.kind,
+        stats: stats::Collector::new(
+            opts.stats_enabled,
+            opts.renderer_stats_log,
+            headless.then_some(limit).flatten(),
+        ),
         selected: Default::default(),
         #[cfg(all(
             target_os = "linux",
@@ -426,12 +455,14 @@ fn start(caller: LocalPid, opts: Start) -> Result<ResourceArc<Session>, String> 
         input: Default::default(),
         #[cfg(all(target_os = "linux", feature = "wayland"))]
         line_pixels: opts.scroll_line_pixels,
-        stats: (opts.stats_enabled || opts.renderer_stats_log).then(stats::Samples::new),
+        next_report: Display::next_report(opts.renderer_stats_log),
+        #[cfg(all(target_os = "linux", feature = "wayland"))]
+        callback: None,
     };
-    if matches!(driver, Driver::Binary(_)) {
+    if headless {
         lock(&owner.pipe)?
             .clock
-            .cadence(interval(opts.target_fps)?.unwrap_or(timing::HEADLESS_PERIOD));
+            .cadence(limit.unwrap_or(timing::HEADLESS_PERIOD));
         owner.geometry((opts.width, opts.height), 1.)?;
     }
     let (ready, rx) = bounded(1);

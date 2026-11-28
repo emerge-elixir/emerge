@@ -103,12 +103,15 @@ struct Claim {
     frame: Frame<Completed>,
     mapping: Mapping,
 }
+// One preallocated channel slot. Boxing a claim to shrink the capture variant
+// would add a heap allocation to every Wayland GPU handoff.
+#[allow(clippy::large_enum_variant)]
 enum Job {
     Present(Claim),
     Capture(Readback),
 }
 // A capture replies directly to its caller; the dispatcher only needs its completion.
-type Report = Option<(Claim, Outcome, Duration)>;
+type Report = Option<(Claim, Outcome, std::ops::Range<Instant>)>;
 pub(super) struct Output {
     jobs: Option<Sender<Job>>,
     reports: Receiver<Result<Report, String>>,
@@ -198,6 +201,7 @@ impl WindowApp {
                                     let t = Instant::now();
                                     let handed = device.handoff(&c, &owner).and_then(|outcome| {
                                         conn.flush().map_err(err)?;
+                                        let span = t..Instant::now();
                                         #[cfg(feature = "stage-probes")]
                                         if matches!(outcome, Outcome::Submitted) {
                                             let revision = c.frame.value.bundle.revision;
@@ -209,17 +213,17 @@ impl WindowApp {
                                                 &owner,
                                             );
                                         }
-                                        Ok(outcome)
+                                        Ok((outcome, span))
                                     });
                                     // Tell dispatch and the draw owner *before* retiring the
                                     // device. An uncertain handoff is never retried or installed.
-                                    let outcome = handed.inspect_err(|e| {
+                                    let (outcome, span) = handed.inspect_err(|e| {
                                         owner.lifecycle.fail(e.clone());
                                         owner.actor.notify();
                                         owner.render.notify();
                                         ping.ping();
                                     })?;
-                                    Some((c, outcome, t.elapsed()))
+                                    Some((c, outcome, span))
                                 }
                                 Job::Capture(read) => {
                                     read.read(|image, rect| device.read(image, rect));
@@ -306,6 +310,9 @@ impl WindowApp {
             }
             #[cfg(any(feature = "vulkan", feature = "stage-probes"))]
             Some((Claim { frame, .. }, Outcome::Unsubmitted { outdated }, _)) => {
+                // The frame request may survive even if we retry the same serial.
+                // It is no longer attributable to an individual handoff.
+                self.display.callback = None;
                 if outdated
                     && lock(&self.owner.pipe)?
                         .view
@@ -319,7 +326,8 @@ impl WindowApp {
                 }
                 gpu.retry = Some(Instant::now() + Duration::from_millis(4));
             }
-            Some((_, Outcome::SupersededView, _)) | None => (),
+            Some((_, Outcome::SupersededView, _)) => self.display.callback = None,
+            None => (),
         }
         self.owner.actor.notify();
         Ok(())
@@ -364,6 +372,7 @@ impl WindowApp {
                     self.window
                         .wl_surface()
                         .frame(qh, self.window.wl_surface().clone());
+                    self.display.callback = crate::session::stats::Callback::arm(&f.value.bundle);
                     self.callback_armed = true;
                 }
                 gpu.send(Job::Present(Claim { frame: f, mapping }))?;

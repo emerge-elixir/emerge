@@ -651,6 +651,13 @@ impl Tree {
             .filter(|(_, n)| n.detached.is_none())
             .filter_map(|(k, n)| Some((n.id, *self.layers.frames.get(k)?)))
     }
+    pub(crate) fn layout_entries(&self) -> [usize; 3] {
+        [
+            self.layers.frames.len(),
+            self.layers.runs.len(),
+            self.layers.parts.len(),
+        ]
+    }
     pub(crate) fn refresh(&mut self, width: f32, height: f32, scale: f32) -> Result<(), String> {
         self.layout(width, height, scale)?;
         self.output.collect(&self.elements, self.root, &self.layers);

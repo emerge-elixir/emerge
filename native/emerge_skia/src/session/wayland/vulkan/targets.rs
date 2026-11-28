@@ -168,7 +168,12 @@ impl Renderer for DrawContext {
         .ok_or("cannot wrap multisampled Vulkan draw target")?;
         Ok((surface, Arc::new(b)))
     }
-    fn finish(&mut self, s: &mut Surface, b: &Self::Storage) -> Result<textures::Image, String> {
+    fn finish(
+        &mut self,
+        s: &mut Surface,
+        b: &Self::Storage,
+        times: &mut crate::session::stats::DrawTimes,
+    ) -> Result<textures::Image, String> {
         let signal = Semaphore {
             raw: unsafe {
                 self.device
@@ -186,9 +191,11 @@ impl Renderer for DrawContext {
         let mut info = gpu::FlushInfo::default();
         unsafe { info.set_signal_semaphores(std::slice::from_mut(&mut sem)) };
         let ctx = self.ctx.direct_context_mut()?;
-        if ctx.flush_surface_with_texture_state(s, &info, Some(&state))
-            != Ok(gpu::SemaphoresSubmitted::Yes)
-            || !ctx.submit(gpu::SyncCpu::Yes)
+        if times.time(
+            |p| &mut p.gpu_flush,
+            || ctx.flush_surface_with_texture_state(s, &info, Some(&state)),
+        ) != Ok(gpu::SemaphoresSubmitted::Yes)
+            || !times.time(|p| &mut p.submit, || ctx.submit(gpu::SyncCpu::Yes))
             || ctx.abandoned()
         {
             return Err("Vulkan draw/resolve failed".into());

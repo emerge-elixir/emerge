@@ -130,7 +130,24 @@ impl Catalog {
 }
 #[derive(Clone)]
 pub(crate) struct Pictures(Arc<Mutex<Catalog>>);
+pub(super) struct PictureGauge(Weak<Mutex<Catalog>>);
+impl PictureGauge {
+    pub(super) fn read(&self) -> Option<(usize, usize, usize, usize, usize)> {
+        let catalog = self.0.upgrade()?;
+        let c = catalog.try_lock().ok()?;
+        Some((
+            c.idle.len(),
+            c.bytes,
+            c.max_entries,
+            c.max_bytes,
+            c.resident.load(Ordering::Relaxed),
+        ))
+    }
+}
 impl Pictures {
+    pub(super) fn gauge(&self) -> PictureGauge {
+        PictureGauge(Arc::downgrade(&self.0))
+    }
     pub(super) fn new(s: &Settings) -> Self {
         Self(Arc::new(Mutex::new(Catalog {
             names: Default::default(),
